@@ -126,24 +126,6 @@ export default function PatyHelp() {
     const cur = schedule[empId]?.[dateISO]
     if (cur === 'vacation') return
 
-    // Keep old behavior: clicking folga removes it. But we still block if it breaks 7-day rule.
-    if (cur === 'folga') {
-      const simSched = { ...schedule, [empId]: { ...(schedule[empId] ?? {}) } }
-      delete simSched[empId][dateISO]
-      const [y, m] = dateISO.split('-')
-      const simViolations = getViolationDays(
-        employees.filter(e => e.id === empId),
-        simSched,
-        Number(y),
-        Number(m) - 1,
-      )
-      if (simViolations[empId]?.size) {
-        setAiError(`⚠️ Remover esta folga fará ${getEmployee(empId)?.name.split(' ')[0]} trabalhar mais de 7 dias seguidos! Use a IA para reorganizar.`)
-        setTimeout(() => setAiError(null), 5000)
-        return
-      }
-    }
-
     const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
     setSchedule(prev => {
       const s = { ...(prev[empId] ?? {}) }
