@@ -1,4 +1,4 @@
-import { useState, CSSProperties } from 'react'
+import { useState, CSSProperties, type ComponentType } from 'react'
 import './PatyHelp.css'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -18,7 +18,7 @@ import {
 type Status  = 'active' | 'dayoff' | 'vacation'
 type EmpType = 'efetivo' | 'temporario'
 type Tab     = 'hoje' | 'pracas' | 'equipe'
-type IconComp = React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>
+type IconComp = ComponentType<{ size?: string | number; color?: string; strokeWidth?: string | number }>
 
 interface Employee {
   id: number; name: string; role: string; initials: string
