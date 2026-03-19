@@ -1,7 +1,7 @@
 import { useState, useEffect, CSSProperties, useCallback } from 'react'
 import './PatyHelp.css'
 import { supabase } from '../supabaseClient'
-import type { Employee, Station, Schedule, DayMark, EmpType, Status, Tab } from '../types'
+import type { Employee, Station, Schedule, StationAssignmentMap, DayMark, EmpType, Status, Tab, ViewMode } from '../types'
 import { GEMINI_KEY, callGemini, buildScheduleContext, parseAiResponse, type AiChange } from '../services/geminiService'
 import {
   Flame, Snowflake, ChefHat, Coffee, Wine, Package, Bell,
@@ -40,13 +40,18 @@ export default function PatyHelp() {
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState<string | null>(null)
 
+  // Praças view state
+  const [stationAssignments, setStationAssignments] = useState<StationAssignmentMap>({})
+  const [viewMode, setViewMode] = useState<ViewMode>('dia')
+  const [viewDate, setViewDate] = useState(new Date().toISOString().split('T')[0])
+
   // Month navigation lifted to root (needed by AI handlers)
   const now = new Date()
   const [viewYear,  setViewYear]  = useState(now.getFullYear())
   const [viewMonth, setViewMonth] = useState(now.getMonth())
 
   // Modals
-  const [assignModal,      setAssignModal]      = useState<{ stationId: number; mode: 'replace' | 'add' } | null>(null)
+  const [assignModal,      setAssignModal]      = useState<{ stationId: number; mode: 'replace' | 'add'; forDate?: string } | null>(null)
   const [editStationModal, setEditStationModal] = useState<Station | null>(null)
   const [editEmpModal,     setEditEmpModal]     = useState<Employee | null>(null)
   const [vacationModal,    setVacationModal]    = useState<Employee | null>(null)
@@ -69,14 +74,15 @@ export default function PatyHelp() {
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const [rolesRes, empsRes, stationsRes, stEmpRes, schedRes] = await Promise.all([
+      const [rolesRes, empsRes, stationsRes, stEmpRes, schedRes, saRes] = await Promise.all([
         supabase.from('roles').select('id,name,sort_order').order('sort_order'),
         supabase.from('employees').select('id,name,role_id,initials,type,sort_order,roles(name)').order('sort_order'),
-        supabase.from('stations').select('id,name,icon_key,sort_order').order('sort_order'),
+        supabase.from('stations').select('id,name,icon_key,sort_order,is_rotativa').order('sort_order'),
         supabase.from('station_employees').select('station_id,employee_id,sort_order').order('sort_order'),
         supabase.from('schedule').select('employee_id,date,mark'),
+        supabase.from('station_assignments').select('station_id,employee_id,date'),
       ])
-      for (const r of [rolesRes, empsRes, stationsRes, stEmpRes, schedRes])
+      for (const r of [rolesRes, empsRes, stationsRes, stEmpRes, schedRes, saRes])
         if (r.error) throw r.error
 
       setRoles((rolesRes.data ?? []).map((r: any) => r.name))
@@ -92,8 +98,17 @@ export default function PatyHelp() {
       }
       setStations((stationsRes.data ?? []).map((s: any) => ({
         id: s.id, name: s.name, iconKey: s.icon_key, sort_order: s.sort_order,
+        isRotativa: s.is_rotativa ?? false,
         assignedIds: stEmpMap[s.id] ?? [],
       })))
+      // Build StationAssignmentMap: date → stationId → empIds[]
+      const saMap: StationAssignmentMap = {}
+      for (const row of (saRes.data ?? []) as any[]) {
+        if (!saMap[row.date]) saMap[row.date] = {}
+        if (!saMap[row.date][row.station_id]) saMap[row.date][row.station_id] = []
+        saMap[row.date][row.station_id].push(row.employee_id)
+      }
+      setStationAssignments(saMap)
       const sched: Schedule = {}
       for (const row of (schedRes.data ?? []) as any[]) {
         if (!sched[row.employee_id]) sched[row.employee_id] = {}
@@ -275,11 +290,50 @@ export default function PatyHelp() {
   const addStation = async () => {
     if (!newSt.name.trim()) return
     const { data, error } = await supabase.from('stations')
-      .insert({ name: newSt.name.trim(), icon_key: newSt.iconKey, sort_order: stations.length })
+      .insert({ name: newSt.name.trim(), icon_key: newSt.iconKey, sort_order: stations.length, is_rotativa: false })
       .select().single()
     if (!error && data)
-      setStations(prev => [...prev, { id: data.id, name: data.name, iconKey: data.icon_key, sort_order: data.sort_order, assignedIds: [] }])
+      setStations(prev => [...prev, { id: data.id, name: data.name, iconKey: data.icon_key, sort_order: data.sort_order, isRotativa: false, assignedIds: [] }])
     setNewSt({ name: '', iconKey: 'flame' }); setAddStationModal(false)
+  }
+
+  const toggleRotativa = async (stationId: number, current: boolean) => {
+    const next = !current
+    await supabase.from('stations').update({ is_rotativa: next }).eq('id', stationId)
+    setStations(prev => prev.map(s => s.id === stationId ? { ...s, isRotativa: next } : s))
+  }
+
+  // Assign for a specific date (rotativa stations)
+  const assignToStationForDate = async (stationId: number, empId: number, mode: 'replace' | 'add', date: string) => {
+    const current = stationAssignments[date]?.[stationId] ?? []
+    if (mode === 'replace') {
+      // Delete all existing for that station+date, then insert the new one
+      await supabase.from('station_assignments').delete()
+        .eq('station_id', stationId).eq('date', date)
+      await supabase.from('station_assignments').insert({ station_id: stationId, employee_id: empId, date })
+      setStationAssignments(prev => ({
+        ...prev,
+        [date]: { ...(prev[date] ?? {}), [stationId]: [empId] },
+      }))
+    } else {
+      if (current.includes(empId)) { setAssignModal(null); return }
+      await supabase.from('station_assignments').insert({ station_id: stationId, employee_id: empId, date })
+      setStationAssignments(prev => ({
+        ...prev,
+        [date]: { ...(prev[date] ?? {}), [stationId]: [...current, empId] },
+      }))
+    }
+    setAssignModal(null)
+  }
+
+  // Remove a single employee from a rotativa station on a specific date
+  const removeEmpForDate = async (stationId: number, empId: number, date: string) => {
+    await supabase.from('station_assignments').delete()
+      .eq('station_id', stationId).eq('employee_id', empId).eq('date', date)
+    setStationAssignments(prev => {
+      const cur = prev[date]?.[stationId] ?? []
+      return { ...prev, [date]: { ...(prev[date] ?? {}), [stationId]: cur.filter(id => id !== empId) } }
+    })
   }
 
   const saveRoles = async (newRoles: string[]) => {
@@ -487,10 +541,23 @@ Responda com JSON:
             />
           )}
           {tab === 'pracas' && (
-            <PracasTab stations={stations} getEmployee={getEmployee}
-              onAssign={(id, mode) => setAssignModal({ stationId: id, mode })}
-              onRemoveEmp={removeFromStation} onEdit={s => setEditStationModal(s)}
-              onDelete={deleteStation} onAdd={() => setAddStationModal(true)} />
+            <PracasTab
+              stations={stations}
+              employees={employees}
+              getEmployee={getEmployee}
+              stationAssignments={stationAssignments}
+              viewMode={viewMode}
+              viewDate={viewDate}
+              onViewModeChange={setViewMode}
+              onViewDateChange={setViewDate}
+              onAssign={(id, mode, forDate) => setAssignModal({ stationId: id, mode, forDate })}
+              onRemoveFixed={removeFromStation}
+              onRemoveForDate={removeEmpForDate}
+              onToggleRotativa={toggleRotativa}
+              onEdit={s => setEditStationModal(s)}
+              onDelete={deleteStation}
+              onAdd={() => setAddStationModal(true)}
+            />
           )}
           {tab === 'equipe' && (
             <EquipeTab employees={employees} schedule={schedule}
@@ -517,37 +584,58 @@ Responda com JSON:
       {/* ── Modals ── */}
 
       {/* Assign station */}
-      {assignModal && modalStation && (
-        <BottomSheet onClose={() => setAssignModal(null)}
-          title={assignModal.mode === 'add' ? `Adicionar · ${modalStation.name}` : `Trocar · ${modalStation.name}`}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {active.map(emp => {
-              const alreadyIn = modalStation.assignedIds.includes(emp.id)
-              return (
-                <button key={emp.id} onClick={() => assignToStation(assignModal.stationId, emp.id, assignModal.mode)}
-                  disabled={assignModal.mode === 'add' && alreadyIn}
-                  style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${alreadyIn ? C.success + '60' : getEmpColor(emp.id).border}`, background: alreadyIn ? C.successLight : getEmpColor(emp.id).bg, cursor: alreadyIn && assignModal.mode === 'add' ? 'default' : 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', textAlign: 'left', opacity: alreadyIn && assignModal.mode === 'add' ? 0.6 : 1 }}>
-                  <Avatar emp={emp} size={40} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{emp.name}</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                      <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
-                      <TypeBadge type={emp.type} small />
+      {assignModal && modalStation && (() => {
+        const forDate   = assignModal.forDate
+        const isRotat   = modalStation.isRotativa && forDate
+        // For "already in" check: rotativa uses date map, fixed uses assignedIds
+        const currentIds = isRotat
+          ? (stationAssignments[forDate!]?.[modalStation.id] ?? [])
+          : modalStation.assignedIds
+        return (
+          <BottomSheet onClose={() => setAssignModal(null)}
+            title={`${assignModal.mode === 'add' ? 'Adicionar' : 'Trocar'} · ${modalStation.name}${forDate ? ` · ${forDate.split('-').reverse().join('/')}` : ''}`}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {active.map(emp => {
+                const alreadyIn = currentIds.includes(emp.id)
+                return (
+                  <button key={emp.id}
+                    onClick={() => isRotat
+                      ? assignToStationForDate(modalStation.id, emp.id, assignModal.mode, forDate!)
+                      : assignToStation(modalStation.id, emp.id, assignModal.mode)
+                    }
+                    disabled={assignModal.mode === 'add' && alreadyIn}
+                    style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${alreadyIn ? C.success + '60' : getEmpColor(emp.id).border}`, background: alreadyIn ? C.successLight : getEmpColor(emp.id).bg, cursor: alreadyIn && assignModal.mode === 'add' ? 'default' : 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', textAlign: 'left', opacity: alreadyIn && assignModal.mode === 'add' ? 0.6 : 1 }}>
+                    <Avatar emp={emp} size={40} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{emp.name}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
+                        <TypeBadge type={emp.type} small />
+                      </div>
                     </div>
-                  </div>
-                  {alreadyIn && <Check size={17} color={C.success} />}
+                    {alreadyIn && <Check size={17} color={C.success} />}
+                  </button>
+                )
+              })}
+              {currentIds.length > 0 && (
+                <button onClick={() => {
+                  if (isRotat) {
+                    // remove all for this date
+                    currentIds.forEach(id => removeEmpForDate(modalStation.id, id, forDate!))
+                  } else {
+                    modalStation.assignedIds.forEach(id => removeFromStation(modalStation.id, id))
+                  }
+                  setAssignModal(null)
+                }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${C.danger}35`, background: C.dangerLight, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', marginTop: 4 }}>
+                  <X size={15} color={C.danger} />
+                  <span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover todos os responsáveis{isRotat ? ' deste dia' : ''}</span>
                 </button>
-              )
-            })}
-            {modalStation.assignedIds.length > 0 && (
-              <button onClick={() => { modalStation.assignedIds.forEach(id => removeFromStation(modalStation.id, id)); setAssignModal(null) }}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${C.danger}35`, background: C.dangerLight, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', marginTop: 4 }}>
-                <X size={15} color={C.danger} /><span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover todos os responsáveis</span>
-              </button>
-            )}
-          </div>
-        </BottomSheet>
-      )}
+              )}
+            </div>
+          </BottomSheet>
+        )
+      })()}
 
       {editStationModal && (
         <BottomSheet onClose={() => setEditStationModal(null)} title="Editar Praça">
