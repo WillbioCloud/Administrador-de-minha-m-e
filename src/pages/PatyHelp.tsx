@@ -14,7 +14,7 @@ import {
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
   AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
   CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase, Loader2,
-  UserPlus,
+  UserPlus, Eraser, Sparkles, Bot,
 } from 'lucide-react'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -28,9 +28,11 @@ const C = {
   info: '#1B5FA8', infoLight: '#E6EFFE',
   teal: '#0D7477', tealLight: '#DDF3F3',
   vacation: '#F5C518', vacationLight: '#FFFAE0',
+  violation: '#FF6B00', violationLight: '#FFF0E6',
   text: '#18080A', textMid: '#6B4435', textLight: '#9A7866',
   border: '#E8E0D8', nav: '#1A0804',
 }
+
 const EMP_COLORS = [
   { bg: '#FDE8DC', text: '#7A2200', border: '#EEC0A0' },
   { bg: '#DEF2EA', text: '#1A5838', border: '#A8D8C0' },
@@ -43,6 +45,7 @@ const EMP_COLORS = [
 const getEmpColor = (id: number) => EMP_COLORS[(id - 1) % EMP_COLORS.length]
 
 type IconComp = React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>
+
 const STATION_ICONS: { key: string; Icon: IconComp; label: string }[] = [
   { key: 'flame',      Icon: Flame,          label: 'Quente'     },
   { key: 'snowflake',  Icon: Snowflake,       label: 'Frio'       },
@@ -67,11 +70,18 @@ const STATION_ICONS: { key: string; Icon: IconComp; label: string }[] = [
 ]
 const getIcon = (key: string): IconComp => STATION_ICONS.find(i => i.key === key)?.Icon ?? Flame
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 const DAY_ABBR    = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB']
 const MONTH_NAMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 const getTodayISO = () => new Date().toISOString().split('T')[0]
-const cap         = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
-const fmtDate     = (iso: string) => { const [y,m,d] = iso.split('-'); return `${d}/${m}/${String(y).slice(2)}` }
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const fmtDate = (iso: string) => { const [y,m,d] = iso.split('-'); return `${d}/${m}/${String(y).slice(2)}` }
+const fmtDateLong = (iso: string) => {
+  const [y,m,d] = iso.split('-')
+  const dt = new Date(Number(y), Number(m)-1, Number(d))
+  return dt.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })
+}
 const TODAY       = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })
 const TODAY_ISO   = getTodayISO()
 
@@ -81,6 +91,13 @@ const buildRange = (start: string, end: string, mark: DayMark): Record<string, D
   while (c <= e) { out[c.toISOString().split('T')[0]] = mark; c.setDate(c.getDate() + 1) }
   return out
 }
+const buildDateArray = (start: string, end: string): string[] => {
+  const dates: string[] = []
+  const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00'), c = new Date(s)
+  while (c <= e) { dates.push(c.toISOString().split('T')[0]); c.setDate(c.getDate() + 1) }
+  return dates
+}
+
 const getStatusForDate = (empId: number, schedule: Schedule, dateISO: string): Status => {
   const m = schedule[empId]?.[dateISO]
   return m === 'folga' ? 'dayoff' : m === 'vacation' ? 'vacation' : 'active'
@@ -89,6 +106,99 @@ const getVacationRange = (empId: number, schedule: Schedule) => {
   const vd = Object.entries(schedule[empId] ?? {}).filter(([,m]) => m === 'vacation').map(([d]) => d).sort()
   return vd.length ? { start: vd[0], end: vd[vd.length - 1] } : null
 }
+
+// ─── 7-day consecutive violation detection ────────────────────────────────────
+
+const getViolationDays = (
+  employees: Employee[], schedule: Schedule, year: number, month: number
+): Record<number, Set<string>> => {
+  const result: Record<number, Set<string>> = {}
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+
+  for (const emp of employees) {
+    const violations = new Set<string>()
+    let streak = 0
+    const streakDates: string[] = []
+
+    // Check 5 days before month start for continuity
+    for (let d = -4; d <= daysInMonth; d++) {
+      const dt = new Date(year, month, d)
+      const iso = dt.toISOString().split('T')[0]
+      const mark = schedule[emp.id]?.[iso]
+      const isResting = mark === 'folga' || mark === 'vacation'
+
+      if (!isResting) {
+        streak++
+        if (d >= 1) streakDates.push(iso)
+        if (streak > 7) {
+          // All days in current streak that are in this month are violations
+          streakDates.forEach(dd => violations.add(dd))
+        }
+      } else {
+        streak = 0
+        streakDates.length = 0
+      }
+    }
+    if (violations.size > 0) result[emp.id] = violations
+  }
+  return result
+}
+
+// ─── Gemini AI ────────────────────────────────────────────────────────────────
+
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY as string | undefined
+
+const callGemini = async (prompt: string): Promise<string> => {
+  if (!GEMINI_KEY) throw new Error('Chave VITE_GEMINI_API_KEY não encontrada no .env.local')
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
+      }),
+    }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(`Gemini ${res.status}: ${(err as any)?.error?.message ?? res.statusText}`)
+  }
+  const data = await res.json()
+  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+}
+
+const buildScheduleContext = (
+  employees: Employee[], schedule: Schedule, year: number, month: number
+): string => {
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
+  const header = `Mês: ${MONTH_NAMES[month]} ${year} (${daysInMonth} dias)\n`
+  const empList = employees.map(e => `  ID${e.id}: ${e.name} | ${e.role} | ${e.type}`).join('\n')
+  const legend = `\nLegenda: T=Trabalhando  F=Folga  V=Férias\n`
+  const dayHeader = `${'Nome'.padEnd(22)} ${days.map(d => String(d).padStart(2)).join(' ')}`
+  const rows = employees.map(emp => {
+    const marks = days.map(d => {
+      const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const m = schedule[emp.id]?.[iso]
+      return m === 'folga' ? ' F' : m === 'vacation' ? ' V' : ' T'
+    }).join('')
+    return `${emp.name.slice(0, 22).padEnd(22)} ${marks}`
+  }).join('\n')
+  return `${header}\nFuncionários:\n${empList}${legend}\n${dayHeader}\n${rows}`
+}
+
+interface AiChange { employee_id: number; date: string; action: 'add_folga' | 'remove_folga' }
+interface AiResponse { changes: AiChange[]; explanation: string }
+
+const parseAiResponse = (raw: string): AiResponse => {
+  const match = raw.match(/\{[\s\S]*\}/)
+  if (!match) throw new Error('Resposta da IA não contém JSON válido')
+  return JSON.parse(match[0]) as AiResponse
+}
+
+// ─── Navigation ───────────────────────────────────────────────────────────────
 
 const NAV_ITEMS = [
   { id: 'hoje'   as Tab, label: 'Dashboard', Icon: LayoutDashboard },
@@ -100,7 +210,7 @@ const NAV_ITEMS = [
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
 export default function PatyHelp() {
-  const [tab,       setTab]       = useState<Tab>('hoje')
+  const [tab, setTab]             = useState<Tab>('hoje')
   const [employees, setEmployees] = useState<Employee[]>([])
   const [stations,  setStations]  = useState<Station[]>([])
   const [schedule,  setSchedule]  = useState<Schedule>({})
@@ -108,7 +218,12 @@ export default function PatyHelp() {
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState<string | null>(null)
 
-  // modals
+  // Month navigation lifted to root (needed by AI handlers)
+  const now = new Date()
+  const [viewYear,  setViewYear]  = useState(now.getFullYear())
+  const [viewMonth, setViewMonth] = useState(now.getMonth())
+
+  // Modals
   const [assignModal,      setAssignModal]      = useState<{ stationId: number; mode: 'replace' | 'add' } | null>(null)
   const [editStationModal, setEditStationModal] = useState<Station | null>(null)
   const [editEmpModal,     setEditEmpModal]     = useState<Employee | null>(null)
@@ -116,10 +231,19 @@ export default function PatyHelp() {
   const [addEmployeeModal, setAddEmployeeModal] = useState(false)
   const [addStationModal,  setAddStationModal]  = useState(false)
   const [rolesModal,       setRolesModal]       = useState(false)
+  const [clearFolgasModal, setClearFolgasModal] = useState(false)
+  const [aiReviewModal,    setAiReviewModal]    = useState(false)
+
+  // Drag-to-day AI folga swap
+  const [dragFolgaConfirm, setDragFolgaConfirm] = useState<{ empId: number; dateISO: string } | null>(null)
+  const [aiLoading,  setAiLoading]  = useState(false)
+  const [aiMessage,  setAiMessage]  = useState<string | null>(null)
+  const [aiError,    setAiError]    = useState<string | null>(null)
+
   const [newEmp, setNewEmp] = useState({ name: '', role: '', type: 'efetivo' as EmpType })
   const [newSt,  setNewSt]  = useState({ name: '', iconKey: 'flame' })
 
-  // ─ Load all data ─
+  // ─ Load all ─
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null)
     try {
@@ -130,31 +254,24 @@ export default function PatyHelp() {
         supabase.from('station_employees').select('station_id,employee_id,sort_order').order('sort_order'),
         supabase.from('schedule').select('employee_id,date,mark'),
       ])
-      for (const r of [rolesRes, empsRes, stationsRes, stEmpRes, schedRes]) {
+      for (const r of [rolesRes, empsRes, stationsRes, stEmpRes, schedRes])
         if (r.error) throw r.error
-      }
 
       setRoles((rolesRes.data ?? []).map((r: any) => r.name))
-
       const emps: Employee[] = (empsRes.data ?? []).map((e: any) => ({
         id: e.id, name: e.name, initials: e.initials, type: e.type, sort_order: e.sort_order,
         role: e.roles?.name ?? '',
       }))
       setEmployees(emps)
-
-      // Build station → assignedIds map
       const stEmpMap: Record<number, number[]> = {}
       for (const se of (stEmpRes.data ?? []) as any[]) {
         if (!stEmpMap[se.station_id]) stEmpMap[se.station_id] = []
         stEmpMap[se.station_id].push(se.employee_id)
       }
-      const sts: Station[] = (stationsRes.data ?? []).map((s: any) => ({
+      setStations((stationsRes.data ?? []).map((s: any) => ({
         id: s.id, name: s.name, iconKey: s.icon_key, sort_order: s.sort_order,
         assignedIds: stEmpMap[s.id] ?? [],
-      }))
-      setStations(sts)
-
-      // Build schedule map
+      })))
       const sched: Schedule = {}
       for (const row of (schedRes.data ?? []) as any[]) {
         if (!sched[row.employee_id]) sched[row.employee_id] = {}
@@ -171,30 +288,45 @@ export default function PatyHelp() {
   useEffect(() => { loadAll() }, [loadAll])
 
   // ─ Derived ─
-  const getStatus  = (e: Employee) => getStatusForDate(e.id, schedule, TODAY_ISO)
-  const active     = employees.filter(e => getStatus(e) === 'active')
-  const offToday   = employees.filter(e => getStatus(e) === 'dayoff')
-  const onVacation = employees.filter(e => getStatus(e) === 'vacation')
-  const coveredSts = stations.filter(s => s.assignedIds.length > 0)
-  const uncovSts   = stations.filter(s => s.assignedIds.length === 0)
+  const getStatus   = (e: Employee) => getStatusForDate(e.id, schedule, TODAY_ISO)
+  const active      = employees.filter(e => getStatus(e) === 'active')
+  const offToday    = employees.filter(e => getStatus(e) === 'dayoff')
+  const onVacation  = employees.filter(e => getStatus(e) === 'vacation')
+  const coveredSts  = stations.filter(s => s.assignedIds.length > 0)
+  const uncovSts    = stations.filter(s => s.assignedIds.length === 0)
   const getEmployee = (id: number) => employees.find(e => e.id === id)
 
-  // ─ Schedule handlers ─
+  const violations = getViolationDays(employees, schedule, viewYear, viewMonth)
+  const hasViolations = Object.keys(violations).length > 0
+
+  // ─ Schedule helpers ─
   const toggleEscalaCell = async (empId: number, dateISO: string) => {
     const cur = schedule[empId]?.[dateISO]
     if (cur === 'vacation') return
+
+    // Block if removing folga would create >7 consecutive days
+    if (cur === 'folga') {
+      // simulate removing
+      const simSched = { ...schedule, [empId]: { ...(schedule[empId] ?? {}) } }
+      delete simSched[empId][dateISO]
+      const simViolations = getViolationDays(employees.filter(e => e.id === empId), simSched, viewYear, viewMonth)
+      if (simViolations[empId]?.size) {
+        setAiError(`⚠️ Remover esta folga fará ${getEmployee(empId)?.name.split(' ')[0]} trabalhar mais de 7 dias seguidos! Use a IA para reorganizar.`)
+        setTimeout(() => setAiError(null), 5000)
+        return
+      }
+    }
+
     const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
-    // Optimistic update
     setSchedule(prev => {
       const s = { ...(prev[empId] ?? {}) }
       if (newMark === null) delete s[dateISO]; else s[dateISO] = newMark
       return { ...prev, [empId]: s }
     })
-    if (newMark === null) {
+    if (newMark === null)
       await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', dateISO)
-    } else {
+    else
       await supabase.from('schedule').upsert({ employee_id: empId, date: dateISO, mark: newMark })
-    }
   }
 
   const setTodayMark = async (empId: number, mark: DayMark | null) => {
@@ -203,54 +335,95 @@ export default function PatyHelp() {
       if (mark === null) delete s[TODAY_ISO]; else s[TODAY_ISO] = mark
       return { ...prev, [empId]: s }
     })
-    if (mark === null) {
+    if (mark === null)
       await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', TODAY_ISO)
-    } else {
+    else
       await supabase.from('schedule').upsert({ employee_id: empId, date: TODAY_ISO, mark })
-    }
-    // Remove from station if going off
     if (mark !== null) {
-      const updatedSts = stations.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) }))
-      setStations(updatedSts)
-      for (const s of stations) {
+      setStations(prev => prev.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) })))
+      for (const s of stations)
         if (s.assignedIds.includes(empId))
           await supabase.from('station_employees').delete().eq('station_id', s.id).eq('employee_id', empId)
-      }
     }
   }
 
   const confirmVacation = async (empId: number, start: string, end: string) => {
     const range = buildRange(start, end, 'vacation')
-    const rows = Object.entries(range).map(([date, mark]) => ({ employee_id: empId, date, mark }))
+    const rows  = Object.entries(range).map(([date, mark]) => ({ employee_id: empId, date, mark }))
     setSchedule(prev => ({ ...prev, [empId]: { ...(prev[empId] ?? {}), ...range } }))
-    // Remove from stations
     setStations(prev => prev.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) })))
     await supabase.from('schedule').upsert(rows)
-    for (const s of stations) {
+    for (const s of stations)
       if (s.assignedIds.includes(empId))
         await supabase.from('station_employees').delete().eq('station_id', s.id).eq('employee_id', empId)
-    }
     setVacationModal(null)
   }
 
   const endVacation = async (empId: number) => {
-    const datesToRemove = Object.entries(schedule[empId] ?? {})
+    const toRemove = Object.entries(schedule[empId] ?? {})
       .filter(([d, m]) => m === 'vacation' && d >= TODAY_ISO).map(([d]) => d)
     setSchedule(prev => ({
-      ...prev, [empId]: Object.fromEntries(Object.entries(prev[empId] ?? {}).filter(([d, m]) => !(m === 'vacation' && d >= TODAY_ISO)))
+      ...prev, [empId]: Object.fromEntries(
+        Object.entries(prev[empId] ?? {}).filter(([d, m]) => !(m === 'vacation' && d >= TODAY_ISO))
+      )
     }))
-    for (const date of datesToRemove)
+    for (const date of toRemove)
       await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', date)
     setVacationModal(null)
   }
 
-  // ─ Station handlers ─
+  // ─ Clear folgas in range ─
+  const clearFolgasInRange = async (start: string, end: string) => {
+    const dates = buildDateArray(start, end)
+    setSchedule(prev => {
+      const next: Schedule = {}
+      for (const [idStr, empSch] of Object.entries(prev)) {
+        const s = { ...empSch }
+        dates.forEach(d => { if (s[d] === 'folga') delete s[d] })
+        next[Number(idStr)] = s
+      }
+      return next
+    })
+    await supabase.from('schedule').delete().in('date', dates).eq('mark', 'folga')
+    setClearFolgasModal(false)
+  }
+
+  // ─ Employee CRUD ─
+  const deleteEmployee = async (empId: number) => {
+    setStations(prev => prev.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) })))
+    setSchedule(prev => { const s = { ...prev }; delete s[empId]; return s })
+    setEmployees(prev => prev.filter(e => e.id !== empId))
+    await supabase.from('station_employees').delete().eq('employee_id', empId)
+    await supabase.from('employees').delete().eq('id', empId)
+  }
+
+  const saveEmployee = async (updated: Employee) => {
+    const roleRow = await supabase.from('roles').select('id').eq('name', updated.role).single()
+    await supabase.from('employees').update({ name: updated.name, role_id: roleRow.data?.id ?? null, type: updated.type, initials: updated.initials }).eq('id', updated.id)
+    setEmployees(prev => prev.map(e => e.id === updated.id ? { ...e, ...updated } : e))
+    setEditEmpModal(null)
+  }
+
+  const addEmployee = async () => {
+    if (!newEmp.name.trim()) return
+    const initials  = newEmp.name.trim().split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
+    const roleName  = newEmp.role || roles[0] || ''
+    const sortOrder = employees.length
+    const roleRow   = await supabase.from('roles').select('id').eq('name', roleName).single()
+    const { data, error } = await supabase.from('employees')
+      .insert({ name: newEmp.name.trim(), role_id: roleRow.data?.id ?? null, initials, type: newEmp.type, sort_order: sortOrder })
+      .select().single()
+    if (!error && data)
+      setEmployees(prev => [...prev, { id: data.id, name: data.name, role: roleName, initials: data.initials, type: data.type, sort_order: data.sort_order }])
+    setNewEmp({ name: '', role: '', type: 'efetivo' }); setAddEmployeeModal(false)
+  }
+
+  // ─ Station CRUD ─
   const assignToStation = async (stationId: number, empId: number, mode: 'replace' | 'add') => {
     const station = stations.find(s => s.id === stationId)!
     let newIds: number[]
     if (mode === 'replace') {
       newIds = [empId]
-      // Delete all current + insert new
       await supabase.from('station_employees').delete().eq('station_id', stationId)
       await supabase.from('station_employees').insert({ station_id: stationId, employee_id: empId, sort_order: 0 })
     } else {
@@ -267,10 +440,9 @@ export default function PatyHelp() {
     await supabase.from('station_employees').delete().eq('station_id', stationId).eq('employee_id', empId)
   }
 
-  // ─ Station CRUD ─
-  const saveStation = async (updated: Station) => {
-    await supabase.from('stations').update({ name: updated.name, icon_key: updated.iconKey }).eq('id', updated.id)
-    setStations(prev => prev.map(s => s.id === updated.id ? { ...s, name: updated.name, iconKey: updated.iconKey } : s))
+  const saveStation = async (u: Station) => {
+    await supabase.from('stations').update({ name: u.name, icon_key: u.iconKey }).eq('id', u.id)
+    setStations(prev => prev.map(s => s.id === u.id ? { ...s, name: u.name, iconKey: u.iconKey } : s))
     setEditStationModal(null)
   }
 
@@ -281,55 +453,24 @@ export default function PatyHelp() {
 
   const addStation = async () => {
     if (!newSt.name.trim()) return
-    const sortOrder = stations.length
     const { data, error } = await supabase.from('stations')
-      .insert({ name: newSt.name.trim(), icon_key: newSt.iconKey, sort_order: sortOrder })
+      .insert({ name: newSt.name.trim(), icon_key: newSt.iconKey, sort_order: stations.length })
       .select().single()
-    if (!error && data) {
+    if (!error && data)
       setStations(prev => [...prev, { id: data.id, name: data.name, iconKey: data.icon_key, sort_order: data.sort_order, assignedIds: [] }])
-    }
     setNewSt({ name: '', iconKey: 'flame' }); setAddStationModal(false)
   }
 
-  // ─ Employee CRUD ─
-  const saveEmployee = async (updated: Employee) => {
-    const roleRow = await supabase.from('roles').select('id').eq('name', updated.role).single()
-    const roleId  = roleRow.data?.id ?? null
-    await supabase.from('employees').update({ name: updated.name, role_id: roleId, type: updated.type, initials: updated.initials }).eq('id', updated.id)
-    setEmployees(prev => prev.map(e => e.id === updated.id ? { ...e, name: updated.name, role: updated.role, type: updated.type, initials: updated.initials } : e))
-    setEditEmpModal(null)
-  }
-
-  const addEmployee = async () => {
-    if (!newEmp.name.trim()) return
-    const roleName  = newEmp.role || roles[0] || ''
-    const initials  = newEmp.name.trim().split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
-    const sortOrder = employees.length
-    const roleRow   = await supabase.from('roles').select('id').eq('name', roleName).single()
-    const roleId    = roleRow.data?.id ?? null
-    const { data, error } = await supabase.from('employees')
-      .insert({ name: newEmp.name.trim(), role_id: roleId, initials, type: newEmp.type, sort_order: sortOrder })
-      .select().single()
-    if (!error && data)
-      setEmployees(prev => [...prev, { id: data.id, name: data.name, role: roleName, initials: data.initials, type: data.type, sort_order: data.sort_order }])
-    setNewEmp({ name: '', role: '', type: 'efetivo' }); setAddEmployeeModal(false)
-  }
-
-  // ─ Roles CRUD ─
   const saveRoles = async (newRoles: string[]) => {
     setRoles(newRoles)
-    // Sync: upsert all roles, remove missing
     const { data: existing } = await supabase.from('roles').select('id,name')
-    const existingNames = (existing ?? []).map((r: any) => r.name)
-    const toAdd    = newRoles.filter(r => !existingNames.includes(r))
-    const toDelete = (existing ?? []).filter((r: any) => !newRoles.includes(r.name))
     for (const [i, name] of newRoles.entries())
       await supabase.from('roles').upsert({ name, sort_order: i }, { onConflict: 'name' })
-    for (const r of toDelete as any[])
-      await supabase.from('roles').delete().eq('id', r.id)
+    for (const r of (existing ?? []) as any[])
+      if (!newRoles.includes(r.name))
+        await supabase.from('roles').delete().eq('id', r.id)
   }
 
-  // ─ Drag reorder in escala ─
   const reorderEmployees = async (fromId: number, toId: number) => {
     setEmployees(prev => {
       const arr = [...prev]
@@ -337,13 +478,98 @@ export default function PatyHelp() {
       if (fi === -1 || ti === -1 || fi === ti) return prev
       const [item] = arr.splice(fi, 1); arr.splice(ti, 0, item)
       arr.forEach((e, i) => { e.sort_order = i })
-      // Persist new order
       Promise.all(arr.map(e => supabase.from('employees').update({ sort_order: e.sort_order }).eq('id', e.id)))
       return arr
     })
   }
 
-  const pieData = [
+  // ─ AI: apply changes from Gemini response ─
+  const applyAiChanges = async (changes: AiChange[]) => {
+    const newSched = { ...schedule }
+    for (const ch of changes) {
+      const s = { ...(newSched[ch.employee_id] ?? {}) }
+      if (ch.action === 'add_folga') s[ch.date] = 'folga'
+      else delete s[ch.date]
+      newSched[ch.employee_id] = s
+    }
+    setSchedule(newSched)
+    for (const ch of changes) {
+      if (ch.action === 'add_folga')
+        await supabase.from('schedule').upsert({ employee_id: ch.employee_id, date: ch.date, mark: 'folga' })
+      else
+        await supabase.from('schedule').delete().eq('employee_id', ch.employee_id).eq('date', ch.date)
+    }
+  }
+
+  // ─ AI: drag-to-day swap ─
+  const handleAISwap = async (empId: number, dateISO: string, useAI: boolean) => {
+    if (!useAI) {
+      await toggleEscalaCell(empId, dateISO)
+      setDragFolgaConfirm(null)
+      return
+    }
+    setAiLoading(true); setAiError(null); setAiMessage(null)
+    try {
+      const emp = employees.find(e => e.id === empId)!
+      const ctx = buildScheduleContext(employees, schedule, viewYear, viewMonth)
+      const prompt = `${ctx}
+
+Pedido: ${emp.name} (ID${emp.id}) quer folgar em ${fmtDateLong(dateISO)} (${dateISO}).
+
+Regras obrigatórias:
+1. Nenhum funcionário pode trabalhar mais de 7 dias consecutivos
+2. Prefira fazer uma troca: encontre outro funcionário que tenha folga próxima a essa data e que possa trabalhar no dia desejado por ${emp.name.split(' ')[0]}, enquanto ${emp.name.split(' ')[0]} trabalha no dia que esse funcionário teria folga
+3. Minimize alterações — faça apenas as mudanças necessárias
+4. Mantenha o total de folgas do mês de cada funcionário
+
+Responda SOMENTE com JSON válido (sem markdown), no formato exato:
+{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"},{"employee_id":2,"date":"YYYY-MM-DD","action":"remove_folga"}],"explanation":"Explicação breve em português das trocas feitas"}`
+
+      const raw = await callGemini(prompt)
+      const parsed = parseAiResponse(raw)
+      await applyAiChanges(parsed.changes)
+      setAiMessage(`✅ ${parsed.explanation}`)
+      setDragFolgaConfirm(null)
+    } catch (e: any) {
+      setAiError(`Erro IA: ${e.message}`)
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  // ─ AI: full schedule review ─
+  const handleAIReview = async () => {
+    setAiLoading(true); setAiError(null); setAiMessage(null)
+    try {
+      const ctx = buildScheduleContext(employees, schedule, viewYear, viewMonth)
+      const prompt = `${ctx}
+
+Analise a escala acima e:
+1. Identifique funcionários que trabalham mais de 7 dias consecutivos
+2. Sugira ajustes mínimos para corrigir essas violações
+3. Mantenha o número de folgas de cada funcionário
+
+Responda com JSON:
+{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"}],"explanation":"Resumo das violações encontradas e correções aplicadas em português"}`
+
+      const raw = await callGemini(prompt)
+      const parsed = parseAiResponse(raw)
+      if (parsed.changes.length > 0) {
+        await applyAiChanges(parsed.changes)
+        setAiMessage(`✅ ${parsed.changes.length} ajuste(s) aplicado(s): ${parsed.explanation}`)
+      } else {
+        setAiMessage(`✅ ${parsed.explanation}`)
+      }
+    } catch (e: any) {
+      setAiError(`Erro IA: ${e.message}`)
+    } finally {
+      setAiLoading(false)
+      setAiReviewModal(false)
+    }
+  }
+
+  // ─ Charts ─
+  const pieData  = [
     { name: 'Cobertas',    value: coveredSts.length, color: C.success },
     { name: 'Descobertas', value: uncovSts.length,   color: C.danger  },
   ]
@@ -352,10 +578,7 @@ export default function PatyHelp() {
     { day: 'Qui', n: active.length }, { day: 'Sex', n: 0 }, { day: 'Sáb', n: 0 }, { day: 'Dom', n: 0 },
   ]
 
-  const modalStationId = assignModal?.stationId
-  const modalStation   = stations.find(s => s.id === modalStationId)
-
-  // ─ Render ─
+  const modalStation = stations.find(s => s.id === assignModal?.stationId)
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, flexDirection: 'column', gap: 14 }}>
@@ -364,7 +587,7 @@ export default function PatyHelp() {
       </div>
       <Loader2 size={22} color={C.textLight} style={{ animation: 'spin 1s linear infinite' }} />
       <span style={{ fontFamily: 'DM Sans,sans-serif', color: C.textLight, fontSize: 14 }}>Carregando dados…</span>
-      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   )
 
@@ -379,7 +602,7 @@ export default function PatyHelp() {
 
   return (
     <div className="ph-app">
-      {/* ── Sidebar ── */}
+      {/* Sidebar */}
       <nav className="ph-sidebar">
         <div className="ph-sidebar-logo"><ChefHat size={22} color="#FFF5EE" strokeWidth={1.8} /></div>
         <div className="ph-sidebar-nav">
@@ -395,7 +618,7 @@ export default function PatyHelp() {
         </div>
       </nav>
 
-      {/* ── Content ── */}
+      {/* Content */}
       <div className="ph-content">
         <header className="ph-header">
           <div>
@@ -408,6 +631,16 @@ export default function PatyHelp() {
           </div>
         </header>
 
+        {/* AI toast messages */}
+        {(aiMessage || aiError) && (
+          <div style={{ margin: '12px 28px 0', padding: '12px 16px', borderRadius: 12, background: aiError ? C.dangerLight : C.successLight, border: `1px solid ${aiError ? C.danger + '40' : C.success + '40'}`, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: 13, color: aiError ? C.danger : C.success, flex: 1, lineHeight: 1.5 }}>{aiMessage ?? aiError}</span>
+            <button onClick={() => { setAiMessage(null); setAiError(null) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: 0 }}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         <main className="ph-main">
           {tab === 'hoje' && (
             <HojeTab employees={employees} active={active} offToday={offToday} onVacation={onVacation}
@@ -416,27 +649,38 @@ export default function PatyHelp() {
               goToPracas={() => setTab('pracas')} goToEquipe={() => setTab('equipe')} goToEscala={() => setTab('escala')} />
           )}
           {tab === 'escala' && (
-            <EscalaTab employees={employees} schedule={schedule}
-              onToggleCell={toggleEscalaCell} onOpenVacation={e => setVacationModal(e)} onReorder={reorderEmployees} />
+            <EscalaTab
+              employees={employees} schedule={schedule} violations={violations}
+              hasViolations={hasViolations}
+              viewYear={viewYear} viewMonth={viewMonth}
+              setViewYear={setViewYear} setViewMonth={setViewMonth}
+              onToggleCell={toggleEscalaCell}
+              onOpenVacation={e => setVacationModal(e)}
+              onReorder={reorderEmployees}
+              onDragToDay={(empId, dateISO) => setDragFolgaConfirm({ empId, dateISO })}
+              onClearFolgas={() => setClearFolgasModal(true)}
+              onAIReview={() => setAiReviewModal(true)}
+              aiLoading={aiLoading}
+            />
           )}
           {tab === 'pracas' && (
             <PracasTab stations={stations} getEmployee={getEmployee}
               onAssign={(id, mode) => setAssignModal({ stationId: id, mode })}
-              onRemoveEmp={removeFromStation}
-              onEdit={s => setEditStationModal(s)} onDelete={deleteStation}
-              onAdd={() => setAddStationModal(true)} />
+              onRemoveEmp={removeFromStation} onEdit={s => setEditStationModal(s)}
+              onDelete={deleteStation} onAdd={() => setAddStationModal(true)} />
           )}
           {tab === 'equipe' && (
             <EquipeTab employees={employees} schedule={schedule}
               onSetFolga={id => setTodayMark(id, 'folga')}
               onClearToday={id => setTodayMark(id, null)}
               onEdit={e => setEditEmpModal(e)} onVacation={e => setVacationModal(e)}
+              onDelete={deleteEmployee}
               onAdd={() => setAddEmployeeModal(true)} onManageRoles={() => setRolesModal(true)} />
           )}
         </main>
       </div>
 
-      {/* ── Mobile nav ── */}
+      {/* Mobile nav */}
       <div className="ph-mobile-nav">
         <div className="ph-mob-inner">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
@@ -447,10 +691,12 @@ export default function PatyHelp() {
         </div>
       </div>
 
-      {/* ── Assign Modal ── */}
+      {/* ── Modals ── */}
+
+      {/* Assign station */}
       {assignModal && modalStation && (
         <BottomSheet onClose={() => setAssignModal(null)}
-          title={assignModal.mode === 'add' ? `Adicionar responsável · ${modalStation.name}` : `Trocar responsável · ${modalStation.name}`}>
+          title={assignModal.mode === 'add' ? `Adicionar · ${modalStation.name}` : `Trocar · ${modalStation.name}`}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {active.map(emp => {
               const alreadyIn = modalStation.assignedIds.includes(emp.id)
@@ -470,39 +716,125 @@ export default function PatyHelp() {
                 </button>
               )
             })}
+            {modalStation.assignedIds.length > 0 && (
+              <button onClick={() => { modalStation.assignedIds.forEach(id => removeFromStation(modalStation.id, id)); setAssignModal(null) }}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${C.danger}35`, background: C.dangerLight, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', marginTop: 4 }}>
+                <X size={15} color={C.danger} /><span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover todos os responsáveis</span>
+              </button>
+            )}
           </div>
         </BottomSheet>
       )}
 
-      {/* ── Other modals ── */}
       {editStationModal && (
         <BottomSheet onClose={() => setEditStationModal(null)} title="Editar Praça">
           <EditStationForm station={editStationModal} onSave={saveStation} />
         </BottomSheet>
       )}
+
       {editEmpModal && (
         <BottomSheet onClose={() => setEditEmpModal(null)} title="Editar Funcionário">
           <EditEmployeeForm emp={editEmpModal} roles={roles} onSave={saveEmployee} />
         </BottomSheet>
       )}
+
       {vacationModal && (
         <BottomSheet onClose={() => setVacationModal(null)} title={`Férias · ${vacationModal.name}`}>
           <VacationForm emp={vacationModal} schedule={schedule} onConfirm={confirmVacation} onEnd={endVacation} />
         </BottomSheet>
       )}
+
       {rolesModal && (
         <BottomSheet onClose={() => setRolesModal(false)} title="Gerenciar Cargos">
           <RolesManager roles={roles} onChange={saveRoles} />
         </BottomSheet>
       )}
+
+      {clearFolgasModal && (
+        <BottomSheet onClose={() => setClearFolgasModal(false)} title="Limpar folgas do período">
+          <ClearFolgasForm
+            viewYear={viewYear} viewMonth={viewMonth}
+            schedule={schedule} employees={employees}
+            onConfirm={clearFolgasInRange} onCancel={() => setClearFolgasModal(false)} />
+        </BottomSheet>
+      )}
+
+      {/* Drag-to-day AI swap confirmation */}
+      {dragFolgaConfirm && (
+        <BottomSheet onClose={() => setDragFolgaConfirm(null)} title="Agendar folga">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
+            <Avatar emp={employees.find(e => e.id === dragFolgaConfirm.empId)!} size={44} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>
+                {employees.find(e => e.id === dragFolgaConfirm.empId)?.name}
+              </div>
+              <div style={{ fontSize: 13, color: C.textMid, marginTop: 2 }}>
+                folga em <strong>{fmtDateLong(dragFolgaConfirm.dateISO)}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 13, color: C.textMid, lineHeight: 1.6, marginBottom: 20 }}>
+            Como quer aplicar esta folga?
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <button onClick={() => handleAISwap(dragFolgaConfirm.empId, dragFolgaConfirm.dateISO, false)}
+              style={{ ...primaryBtnSt, background: C.bg, color: C.text, border: `1px solid ${C.border}` }}>
+              <Check size={16} /> Só marcar a folga
+            </button>
+            <button onClick={() => handleAISwap(dragFolgaConfirm.empId, dragFolgaConfirm.dateISO, true)}
+              disabled={aiLoading || !GEMINI_KEY}
+              style={{ ...primaryBtnSt, opacity: aiLoading || !GEMINI_KEY ? 0.6 : 1 }}>
+              {aiLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={16} />}
+              {aiLoading ? 'IA organizando...' : 'Reorganizar com IA'}
+            </button>
+            {!GEMINI_KEY && (
+              <div style={{ fontSize: 11, color: C.danger, textAlign: 'center' }}>
+                Configure VITE_GEMINI_API_KEY no .env.local para usar a IA
+              </div>
+            )}
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* AI Review modal */}
+      {aiReviewModal && (
+        <BottomSheet onClose={() => setAiReviewModal(false)} title="Revisar escala com IA">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
+            <Bot size={28} color={C.info} strokeWidth={1.8} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Análise automática</div>
+              <div style={{ fontSize: 12, color: C.textMid, marginTop: 2, lineHeight: 1.5 }}>
+                A IA vai analisar {MONTH_NAMES[viewMonth]} {viewYear}, identificar funcionários com mais de 7 dias seguidos e sugerir correções.
+              </div>
+            </div>
+          </div>
+          {hasViolations && (
+            <div style={{ padding: '10px 14px', background: C.violationLight, borderRadius: 11, marginBottom: 16, fontSize: 13, color: C.violation, fontWeight: 600 }}>
+              ⚠️ {Object.keys(violations).length} funcionário(s) com violação detectada neste mês
+            </div>
+          )}
+          <button onClick={handleAIReview} disabled={aiLoading || !GEMINI_KEY}
+            style={{ ...primaryBtnSt, opacity: aiLoading || !GEMINI_KEY ? 0.6 : 1 }}>
+            {aiLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={16} />}
+            {aiLoading ? 'Analisando...' : 'Analisar e corrigir'}
+          </button>
+          {!GEMINI_KEY && (
+            <div style={{ fontSize: 11, color: C.danger, textAlign: 'center', marginTop: 8 }}>
+              Configure VITE_GEMINI_API_KEY no .env.local
+            </div>
+          )}
+        </BottomSheet>
+      )}
+
       {addEmployeeModal && (
         <BottomSheet onClose={() => setAddEmployeeModal(false)} title="Novo Funcionário">
           <FLabel>Nome completo</FLabel>
           <input placeholder="Ex: Maria Silva" value={newEmp.name}
             onChange={e => setNewEmp(p => ({ ...p, name: e.target.value }))} style={inputSt} />
           <FLabel style={{ marginTop: 12 }}>Cargo</FLabel>
-          <select value={newEmp.role || roles[0] || ''}
-            onChange={e => setNewEmp(p => ({ ...p, role: e.target.value }))} style={selectSt}>
+          <select value={newEmp.role || roles[0] || ''} onChange={e => setNewEmp(p => ({ ...p, role: e.target.value }))} style={selectSt}>
             {roles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
           <FLabel style={{ marginTop: 12 }}>Tipo de contrato</FLabel>
@@ -512,6 +844,7 @@ export default function PatyHelp() {
           </button>
         </BottomSheet>
       )}
+
       {addStationModal && (
         <BottomSheet onClose={() => setAddStationModal(false)} title="Nova Praça">
           <FLabel>Nome da praça</FLabel>
@@ -550,16 +883,13 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
         <MetricCard value={coveredSts.length} label="Praças cobertas" Icon={TrendingUp}   accent={C.accent}  light={C.accentLight}  />
         <MetricCard value={employees.length}  label="Total da equipe" Icon={Users}        accent={C.nav}     light="#E8E0D8" dark />
       </div>
-
       <div className="ph-row-211">
         <div className="ph-card">
           <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Praças de hoje</span>
             <button onClick={goToPracas} style={linkBtnSt}>Gerenciar <ChevronRight size={12} /></button>
           </div>
-          {stations.length === 0 && (
-            <div style={{ padding: '20px 18px', color: C.textLight, fontSize: 13, textAlign: 'center' }}>Nenhuma praça cadastrada</div>
-          )}
+          {stations.length === 0 && <div style={{ padding: '20px 18px', color: C.textLight, fontSize: 13, textAlign: 'center' }}>Nenhuma praça cadastrada</div>}
           {stations.map((s, idx) => {
             const StIcon = getIcon(s.iconKey)
             const emps   = s.assignedIds.map(id => getEmployee(id)).filter(Boolean) as Employee[]
@@ -571,23 +901,17 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
                   {emps.length > 0
-                    ? <div style={{ fontSize: 11, color: C.textMid, marginTop: 1 }}>{emps.map(e => e!.name.split(' ')[0]).join(', ')}</div>
-                    : <div style={{ fontSize: 11, color: C.danger, fontWeight: 600, marginTop: 1 }}>Sem responsável</div>
-                  }
+                    ? <div style={{ fontSize: 11, color: C.textMid, marginTop: 1 }}>{emps.map(e => e.name.split(' ')[0]).join(', ')}</div>
+                    : <div style={{ fontSize: 11, color: C.danger, fontWeight: 600, marginTop: 1 }}>Sem responsável</div>}
                 </div>
-                <div style={{ display: 'flex', gap: -6 }}>
-                  {emps.slice(0, 3).map(e => <Avatar key={e!.id} emp={e!} size={26} />)}
-                  {emps.length === 0 && (
-                    <div style={{ width: 26, height: 26, borderRadius: '50%', background: C.dangerLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <AlertTriangle size={11} color={C.danger} />
-                    </div>
-                  )}
+                <div style={{ display: 'flex' }}>
+                  {emps.slice(0, 3).map(e => <Avatar key={e.id} emp={e} size={26} />)}
+                  {emps.length === 0 && <div style={{ width: 26, height: 26, borderRadius: '50%', background: C.dangerLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><AlertTriangle size={11} color={C.danger} /></div>}
                 </div>
               </div>
             )
           })}
         </div>
-
         <div className="ph-card ph-card-p">
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Equipe esta semana</div>
           <div style={{ fontSize: 11, color: C.textLight, marginBottom: 14, marginTop: 2 }}>Funcionários por dia</div>
@@ -600,7 +924,6 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
             </BarChart>
           </ResponsiveContainer>
         </div>
-
         <div className="ph-card ph-card-p" style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 16 }}>Composição da equipe</div>
           {[
@@ -617,7 +940,6 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
           <button onClick={goToEquipe} style={{ ...outlineBtnSt, marginTop: 'auto', paddingTop: 14 }}><Users size={13} /> Ver equipe</button>
         </div>
       </div>
-
       <div className="ph-row-211">
         <div className="ph-card">
           <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -639,7 +961,6 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
             </div>
           ))}
         </div>
-
         <div className="ph-card ph-card-p">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Ausências</div>
@@ -664,7 +985,6 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
             )
           })}
         </div>
-
         <div className="ph-card ph-card-p" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
           <div style={{ width: 52, height: 52, borderRadius: 16, background: uncovSts.length > 0 ? C.dangerLight : C.successLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
             {uncovSts.length > 0 ? <AlertTriangle size={26} color={C.danger} strokeWidth={1.8} /> : <Check size={26} color={C.success} strokeWidth={2} />}
@@ -678,7 +998,6 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
           {uncovSts.length > 0 && <button onClick={goToPracas} style={{ ...primaryBtnSt, fontSize: 13, padding: '10px 16px' }}>Resolver agora</button>}
         </div>
       </div>
-
       <div className="ph-card ph-card-p">
         <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 4 }}>Cobertura de praças</div>
         <ResponsiveContainer width="100%" height={180}>
@@ -698,16 +1017,23 @@ function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts
 
 // ─── EscalaTab ────────────────────────────────────────────────────────────────
 
-function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorder }: {
+function EscalaTab({ employees, schedule, violations, hasViolations, viewYear, viewMonth, setViewYear, setViewMonth, onToggleCell, onOpenVacation, onReorder, onDragToDay, onClearFolgas, onAIReview, aiLoading }: {
   employees: Employee[]; schedule: Schedule
+  violations: Record<number, Set<string>>; hasViolations: boolean
+  viewYear: number; viewMonth: number
+  setViewYear: (y: number) => void; setViewMonth: (m: number) => void
   onToggleCell: (empId: number, dateISO: string) => void
   onOpenVacation: (emp: Employee) => void
   onReorder: (fromId: number, toId: number) => void
+  onDragToDay: (empId: number, dateISO: string) => void
+  onClearFolgas: () => void
+  onAIReview: () => void
+  aiLoading: boolean
 }) {
-  const now = new Date()
-  const [viewYear,  setViewYear]  = useState(now.getFullYear())
-  const [viewMonth, setViewMonth] = useState(now.getMonth())
-  const dragIdRef = useRef<number | null>(null)
+  const dragIdRef      = useRef<number | null>(null)
+  const scrollWrapRef  = useRef<HTMLDivElement>(null)
+  const scrollInterval = useRef<ReturnType<typeof setInterval> | null>(null)
+  const dragOverX      = useRef(0)
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
@@ -716,52 +1042,104 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
   const isWeekend  = (d: number) => { const w = getDow(d); return w === 0 || w === 6 }
   const isToday    = (d: number) => getDateISO(d) === TODAY_ISO
 
-  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y-1) } else setViewMonth(m => m-1) }
-  const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y+1) } else setViewMonth(m => m+1) }
-  const goToday   = () => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()) }
+  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1) } else setViewMonth(viewMonth - 1) }
+  const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1) } else setViewMonth(viewMonth + 1) }
+  const goToday   = () => { setViewYear(new Date().getFullYear()); setViewMonth(new Date().getMonth()) }
+
+  // Auto-scroll loop
+  const startScroll = () => {
+    if (scrollInterval.current) return
+    scrollInterval.current = setInterval(() => {
+      const el = scrollWrapRef.current; if (!el) return
+      const rect = el.getBoundingClientRect()
+      const ZONE = 100, SPEED = 18
+      if (dragOverX.current - rect.left < ZONE)  el.scrollLeft -= SPEED
+      if (rect.right - dragOverX.current < ZONE)  el.scrollLeft += SPEED
+    }, 16)
+  }
+  const stopScroll = () => {
+    if (scrollInterval.current) { clearInterval(scrollInterval.current); scrollInterval.current = null }
+  }
+
+  const handleWrapDragOver = (e: React.DragEvent) => {
+    e.preventDefault(); dragOverX.current = e.clientX; startScroll()
+  }
+
+  const handleNameDragStart = (empId: number) => { dragIdRef.current = empId }
+
+  const handleNameDrop = (targetEmpId: number) => {
+    stopScroll()
+    const fromId = dragIdRef.current; dragIdRef.current = null
+    if (fromId !== null && fromId !== targetEmpId) onReorder(fromId, targetEmpId)
+  }
+
+  const handleDayDrop = (e: React.DragEvent, dateISO: string) => {
+    e.preventDefault(); e.stopPropagation(); stopScroll()
+    const empId = dragIdRef.current; dragIdRef.current = null
+    if (empId !== null) onDragToDay(empId, dateISO)
+  }
+
+  const handleDragEnd = () => stopScroll()
 
   const roles = [...new Set(employees.map(e => e.role))]
-  const getDayMark = (empId: number, d: number): DayMark | null => (schedule[empId]?.[getDateISO(d)] as DayMark | undefined) ?? null
 
   if (employees.length === 0) return (
     <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
       <Users size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
       <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhum funcionário cadastrado</div>
-      <div style={{ fontSize: 13, marginTop: 4 }}>Adicione funcionários na aba Equipe</div>
     </div>
   )
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {/* AI review */}
+          <button onClick={onAIReview} disabled={aiLoading}
+            style={{ ...addBtnSt, background: hasViolations ? C.violation : C.info, gap: 6 }}>
+            {aiLoading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={14} />}
+            {hasViolations ? 'Violações detectadas' : 'Revisar com IA'}
+          </button>
+          {/* Clear folgas */}
+          <button onClick={onClearFolgas} style={{ ...addBtnSt, background: C.card, color: C.textMid, border: `1px solid ${C.border}` }}>
+            <Eraser size={14} /> Limpar folgas
+          </button>
+          {/* Month navigation */}
           <button onClick={goToday} style={{ ...outlineBtnSt, width: 'auto', padding: '6px 12px', fontSize: 12 }}>Hoje</button>
           <button onClick={prevMonth} style={iconEditBtnSt}><ChevronLeft size={15} /></button>
           <span style={{ fontWeight: 700, fontSize: 14, color: C.text, minWidth: 130, textAlign: 'center' }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
           <button onClick={nextMonth} style={iconEditBtnSt}><ChevronRight size={15} /></button>
         </div>
       </div>
+
+      {/* Legend */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         {[
-          { bg: C.dangerLight, border: '#F0B0B0', color: C.danger, text: 'F', label: 'Folga — clique para marcar' },
-          { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias — via ícone 📅' },
+          { bg: C.dangerLight,    border: '#F0B0B0', color: C.danger,    text: 'F',   label: 'Folga — clique para marcar' },
+          { bg: C.vacationLight,  border: '#E8D060', color: '#8B6A00',   text: 'FÉR', label: 'Férias' },
+          { bg: C.violationLight, border: '#FF6B00', color: C.violation, text: '!',   label: '+7 dias seguidos' },
         ].map(l => (
           <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
-            <div style={{ minWidth: l.text === 'FÉR' ? 28 : 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
+            <div style={{ minWidth: 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
             {l.label}
           </div>
         ))}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
-          <GripVertical size={14} color={C.textLight} /> Arraste para reordenar
+          <GripVertical size={14} color={C.textLight} /> Arraste nome → reorder &nbsp;|&nbsp; Arraste nome → dia → agendar folga
         </div>
       </div>
 
-      <div className="ph-escala-wrap">
+      {/* Scrollable table */}
+      <div ref={scrollWrapRef} className="ph-escala-wrap"
+        onDragOver={handleWrapDragOver} onDragLeave={stopScroll} onDrop={stopScroll}>
         <table className="ph-escala-table">
           <thead>
             <tr>
-              <th className="ph-escala-name-col" style={{ background: C.nav, color: '#FFF5EE', fontSize: 10, fontWeight: 700, padding: '9px 14px', textAlign: 'left', borderRight: `2px solid rgba(255,255,255,0.15)`, letterSpacing: '0.5px' }}>FUNCIONÁRIO</th>
+              <th className="ph-escala-name-col" style={{ background: C.nav, color: '#FFF5EE', fontSize: 10, fontWeight: 700, padding: '9px 14px', textAlign: 'left', borderRight: `2px solid rgba(255,255,255,0.15)`, letterSpacing: '0.5px' }}>
+                FUNCIONÁRIO
+              </th>
               {days.map(d => {
                 const dow = getDow(d); const weekend = isWeekend(d); const today = isToday(d)
                 return (
@@ -777,49 +1155,124 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
             {roles.map(role => (
               <>
                 <tr key={`g-${role}`}>
-                  <td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>{role}</td>
+                  <td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+                    {role}
+                  </td>
                 </tr>
-                {employees.filter(e => e.role === role).map(emp => (
-                  <tr key={emp.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                    <td className="ph-escala-name-col-td" draggable
-                      onDragStart={() => { dragIdRef.current = emp.id }}
-                      onDragOver={e => e.preventDefault()}
-                      onDrop={() => { if (dragIdRef.current !== null && dragIdRef.current !== emp.id) onReorder(dragIdRef.current, emp.id); dragIdRef.current = null }}
-                      style={{ cursor: 'grab' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px' }}>
-                        <GripVertical size={13} color={C.border} strokeWidth={2} style={{ flexShrink: 0 }} />
-                        <Avatar emp={emp} size={26} />
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 12, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{emp.name.split(' ').slice(0, 2).join(' ')}</div>
-                          <TypeBadge type={emp.type} small />
+                {employees.filter(e => e.role === role).map(emp => {
+                  const hasViolation = !!violations[emp.id]?.size
+                  return (
+                    <tr key={emp.id} style={{ borderBottom: `1px solid ${C.border}`, background: hasViolation ? '#FFF8F5' : 'transparent' }}>
+                      {/* Draggable name cell */}
+                      <td className="ph-escala-name-col-td"
+                        draggable
+                        onDragStart={() => handleNameDragStart(emp.id)}
+                        onDragEnd={handleDragEnd}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={() => handleNameDrop(emp.id)}
+                        style={{ cursor: 'grab', background: hasViolation ? '#FFF0EC' : '#fff' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px' }}>
+                          <GripVertical size={13} color={hasViolation ? C.violation : C.border} strokeWidth={2} style={{ flexShrink: 0 }} />
+                          <Avatar emp={emp} size={26} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 12, color: hasViolation ? C.violation : C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {emp.name.split(' ').slice(0, 2).join(' ')}
+                            </div>
+                            <TypeBadge type={emp.type} small />
+                          </div>
+                          <button onClick={() => onOpenVacation(emp)} title="Editar férias"
+                            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: '2px', flexShrink: 0 }}>
+                            <Calendar size={12} strokeWidth={2} />
+                          </button>
                         </div>
-                        <button onClick={() => onOpenVacation(emp)} title="Editar férias"
-                          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: '2px', flexShrink: 0 }}>
-                          <Calendar size={12} strokeWidth={2} />
-                        </button>
-                      </div>
-                    </td>
-                    {days.map(d => {
-                      const mark = getDayMark(emp.id, d); const weekend = isWeekend(d); const today = isToday(d)
-                      const isVac = mark === 'vacation'; const isF = mark === 'folga'
-                      let bg = weekend ? '#FAF6F2' : '#FFFFFF'
-                      if (today && !mark) bg = '#FFF8F4'
-                      if (isF) bg = C.dangerLight
-                      if (isVac) bg = C.vacationLight
-                      return (
-                        <td key={d} className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`}
-                          onClick={() => !isVac && onToggleCell(emp.id, getDateISO(d))}
-                          style={{ background: bg, color: isVac ? '#8B6A00' : isF ? C.danger : 'transparent', fontWeight: 800, fontSize: isVac ? 8 : 11, borderRight: today ? `1px solid ${C.accent}40` : `1px solid ${C.border}` }}>
-                          {isVac ? 'FÉR' : isF ? 'F' : ''}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
+                      </td>
+                      {/* Day cells */}
+                      {days.map(d => {
+                        const dateISO  = getDateISO(d)
+                        const mark     = (schedule[emp.id]?.[dateISO] as DayMark | undefined) ?? null
+                        const weekend  = isWeekend(d); const today = isToday(d)
+                        const isVac    = mark === 'vacation'; const isF = mark === 'folga'
+                        const isViol   = violations[emp.id]?.has(dateISO)
+
+                        let bg = weekend ? '#FAF6F2' : '#FFFFFF'
+                        if (today && !mark) bg = '#FFF8F4'
+                        if (isF)    bg = C.dangerLight
+                        if (isVac)  bg = C.vacationLight
+                        if (isViol && !isF && !isVac) bg = C.violationLight
+
+                        return (
+                          <td key={d}
+                            className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`}
+                            onClick={() => !isVac && onToggleCell(emp.id, dateISO)}
+                            onDragOver={e => { e.preventDefault(); e.stopPropagation() }}
+                            onDrop={e => handleDayDrop(e, dateISO)}
+                            title={isViol ? '⚠ Mais de 7 dias seguidos' : undefined}
+                            style={{
+                              background: bg,
+                              color: isVac ? '#8B6A00' : isF ? C.danger : isViol ? C.violation : 'transparent',
+                              fontWeight: 800, fontSize: isVac ? 8 : 11,
+                              borderRight: today ? `1px solid ${C.accent}40` : `1px solid ${C.border}`,
+                              boxShadow: isViol && !isF && !isVac ? `inset 0 0 0 1px ${C.violation}50` : undefined,
+                            }}>
+                            {isVac ? 'FÉR' : isF ? 'F' : isViol ? '!' : ''}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
               </>
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── ClearFolgasForm ──────────────────────────────────────────────────────────
+
+function ClearFolgasForm({ viewYear, viewMonth, schedule, employees, onConfirm, onCancel }: {
+  viewYear: number; viewMonth: number; schedule: Schedule; employees: Employee[]
+  onConfirm: (start: string, end: string) => void; onCancel: () => void
+}) {
+  const firstDay = `${viewYear}-${String(viewMonth + 1).padStart(2,'0')}-01`
+  const lastDay  = `${viewYear}-${String(viewMonth + 1).padStart(2,'0')}-${new Date(viewYear, viewMonth + 1, 0).getDate()}`
+  const [start, setStart] = useState(firstDay)
+  const [end,   setEnd]   = useState(lastDay)
+
+  const dates   = start && end && end >= start ? buildDateArray(start, end) : []
+  const count   = dates.reduce((acc, d) => {
+    return acc + employees.filter(e => schedule[e.id]?.[d] === 'folga').length
+  }, 0)
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textMid, marginBottom: 18, lineHeight: 1.6 }}>
+        Apaga todas as marcações de <strong>Folga</strong> no período selecionado. Férias não são afetadas.
+      </div>
+      <FLabel>De que dia:</FLabel>
+      <input type="date" value={start} min={firstDay} max={lastDay}
+        onChange={e => setStart(e.target.value)} style={inputSt} />
+      <FLabel style={{ marginTop: 12 }}>Até que dia:</FLabel>
+      <input type="date" value={end} min={start || firstDay} max={lastDay}
+        onChange={e => setEnd(e.target.value)} style={inputSt} />
+
+      {dates.length > 0 && (
+        <div style={{ marginTop: 14, padding: '12px 14px', background: count > 0 ? C.warningLight : C.successLight, borderRadius: 12, fontSize: 13, color: count > 0 ? C.warning : C.success, fontWeight: 600 }}>
+          {count > 0
+            ? `${count} marcação(ões) de folga serão removidas em ${dates.length} dia(s)`
+            : `Nenhuma folga marcada no período selecionado`}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 20 }}>
+        <button onClick={onCancel} style={{ ...outlineBtnSt, width: 'auto' }}>Cancelar</button>
+        <button onClick={() => count > 0 && onConfirm(start, end)}
+          disabled={count === 0 || !start || !end || end < start}
+          style={{ ...primaryBtnSt, width: 'auto', background: count > 0 ? C.danger : C.border, opacity: count === 0 ? 0.6 : 1 }}>
+          <Trash2 size={15} /> Limpar {count > 0 ? `(${count})` : ''}
+        </button>
       </div>
     </div>
   )
@@ -844,18 +1297,15 @@ function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDel
         <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
           <UtensilsCrossed size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
           <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhuma praça cadastrada</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>Clique em "+ Nova praça" para começar</div>
         </div>
       )}
       <div className="ph-stations-grid">
         {stations.map(s => {
-          const emps    = s.assignedIds.map(id => getEmployee(id)).filter(Boolean) as Employee[]
-          const StIcon  = getIcon(s.iconKey)
-          const covered = emps.length > 0
+          const emps = s.assignedIds.map(id => getEmployee(id)).filter(Boolean) as Employee[]
+          const StIcon = getIcon(s.iconKey); const covered = emps.length > 0
           return (
             <div key={s.id} className="ph-card" style={{ borderLeft: `4px solid ${covered ? C.success : C.danger}` }}>
               <div className="ph-card-p">
-                {/* Header */}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
                   <div style={{ width: 46, height: 46, borderRadius: 13, background: C.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     <StIcon size={22} color={C.accent} strokeWidth={1.8} />
@@ -865,12 +1315,10 @@ function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDel
                     <StatusBadge status={covered ? 'covered' : 'empty'} />
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={() => onEdit(s)} style={iconEditBtnSt} title="Editar"><Pencil size={13} strokeWidth={2} /></button>
-                    <button onClick={() => setConfirmDelete(s.id)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }} title="Apagar"><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
+                    <button onClick={() => onEdit(s)} style={iconEditBtnSt}><Pencil size={13} strokeWidth={2} /></button>
+                    <button onClick={() => setConfirmDelete(s.id)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }}><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
                   </div>
                 </div>
-
-                {/* Confirm delete */}
                 {confirmDelete === s.id && (
                   <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}35`, borderRadius: 11, padding: '10px 12px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>Apagar "{s.name}"?</span>
@@ -880,22 +1328,19 @@ function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDel
                     </div>
                   </div>
                 )}
-
-                {/* Assigned employees list */}
                 {emps.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
                     {emps.map(emp => (
-                      <div key={emp!.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 11, background: getEmpColor(emp!.id).bg, border: `1px solid ${getEmpColor(emp!.id).border}` }}>
-                        <Avatar emp={emp!} size={32} />
+                      <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 11, background: getEmpColor(emp.id).bg, border: `1px solid ${getEmpColor(emp.id).border}` }}>
+                        <Avatar emp={emp} size={32} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{emp!.name}</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 1 }}>
-                            <span style={{ fontSize: 11, color: C.textMid }}>{emp!.role}</span>
-                            <TypeBadge type={emp!.type} small />
+                          <div style={{ fontWeight: 600, fontSize: 13, color: C.text }}>{emp.name}</div>
+                          <div style={{ display: 'flex', gap: 5, marginTop: 1 }}>
+                            <span style={{ fontSize: 11, color: C.textMid }}>{emp.role}</span>
+                            <TypeBadge type={emp.type} small />
                           </div>
                         </div>
-                        <button onClick={() => onRemoveEmp(s.id, emp!.id)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: 4, flexShrink: 0 }} title="Remover">
+                        <button onClick={() => onRemoveEmp(s.id, emp.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: 4 }}>
                           <X size={14} strokeWidth={2} />
                         </button>
                       </div>
@@ -907,16 +1352,12 @@ function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDel
                     <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>Nenhum funcionário atribuído</span>
                   </div>
                 )}
-
-                {/* Action buttons */}
                 <div style={{ display: 'grid', gridTemplateColumns: emps.length > 0 ? '1fr 1fr' : '1fr', gap: 8 }}>
                   {emps.length > 0 && (
-                    <button onClick={() => onAssign(s.id, 'replace')} style={{ ...primaryBtnSt, background: C.bg, color: C.textMid, border: `1px solid ${C.border}`, fontSize: 13 }}>
-                      Trocar
-                    </button>
+                    <button onClick={() => onAssign(s.id, 'replace')} style={{ ...primaryBtnSt, background: C.bg, color: C.textMid, border: `1px solid ${C.border}`, fontSize: 13 }}>Trocar</button>
                   )}
                   <button onClick={() => onAssign(s.id, 'add')} style={{ ...primaryBtnSt, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                    <UserPlus size={15} /> {emps.length === 0 ? 'Atribuir funcionário' : 'Adicionar'}
+                    <UserPlus size={15} /> {emps.length === 0 ? 'Atribuir' : 'Adicionar'}
                   </button>
                 </div>
               </div>
@@ -930,11 +1371,11 @@ function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDel
 
 // ─── EquipeTab ────────────────────────────────────────────────────────────────
 
-function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVacation, onAdd, onManageRoles }: {
+function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVacation, onDelete, onAdd, onManageRoles }: {
   employees: Employee[]; schedule: Schedule
   onSetFolga: (id: number) => void; onClearToday: (id: number) => void
   onEdit: (e: Employee) => void; onVacation: (e: Employee) => void
-  onAdd: () => void; onManageRoles: () => void
+  onDelete: (id: number) => void; onAdd: () => void; onManageRoles: () => void
 }) {
   const active   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'active')
   const dayoff   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'dayoff')
@@ -954,25 +1395,24 @@ function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVa
         <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
           <Users size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
           <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhum funcionário cadastrado</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>Clique em "+ Funcionário" para começar</div>
         </div>
       )}
       {active.length > 0 && (<>
         <GroupLabel>Trabalhando hoje · {active.length}</GroupLabel>
         <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
-          {active.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+          {active.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} onDelete={onDelete} />)}
         </div>
       </>)}
       {dayoff.length > 0 && (<>
         <GroupLabel>De folga · {dayoff.length}</GroupLabel>
         <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
-          {dayoff.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+          {dayoff.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} onDelete={onDelete} />)}
         </div>
       </>)}
       {vacation.length > 0 && (<>
         <GroupLabel>De férias · {vacation.length}</GroupLabel>
         <div className="ph-equipe-grid">
-          {vacation.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+          {vacation.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} onDelete={onDelete} />)}
         </div>
       </>)}
     </div>
@@ -981,11 +1421,12 @@ function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVa
 
 // ─── EmployeeCard ─────────────────────────────────────────────────────────────
 
-function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacation }: {
+function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacation, onDelete }: {
   emp: Employee; schedule: Schedule
   onSetFolga: (id: number) => void; onClearToday: (id: number) => void
-  onEdit: (e: Employee) => void; onVacation: (e: Employee) => void
+  onEdit: (e: Employee) => void; onVacation: (e: Employee) => void; onDelete: (id: number) => void
 }) {
+  const [confirmDel, setConfirmDel] = useState(false)
   const status   = getStatusForDate(emp.id, schedule, TODAY_ISO)
   const vacRange = getVacationRange(emp.id, schedule)
   const accent   = status === 'active' ? C.success : status === 'vacation' ? C.info : C.warning
@@ -1003,12 +1444,31 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
               </div>
             )}
           </div>
-          <button onClick={() => onEdit(emp)} style={iconEditBtnSt}><Pencil size={13} strokeWidth={2} /></button>
+          {/* Edit + Delete */}
+          <div style={{ display: 'flex', gap: 5 }}>
+            <button onClick={() => onEdit(emp)} style={iconEditBtnSt} title="Editar"><Pencil size={13} strokeWidth={2} /></button>
+            <button onClick={() => setConfirmDel(true)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }} title="Remover">
+              <Trash2 size={13} strokeWidth={2} color={C.danger} />
+            </button>
+          </div>
         </div>
+
+        {/* Delete confirmation */}
+        {confirmDel && (
+          <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}35`, borderRadius: 11, padding: '10px 12px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ fontSize: 12, color: C.danger, fontWeight: 600 }}>Remover "{emp.name.split(' ')[0]}"?</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => setConfirmDel(false)} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 9px', cursor: 'pointer', fontSize: 12, color: C.textMid, fontFamily: 'DM Sans,sans-serif' }}>Não</button>
+              <button onClick={() => onDelete(emp.id)} style={{ background: C.danger, border: 'none', borderRadius: 8, padding: '4px 9px', cursor: 'pointer', fontSize: 12, color: '#fff', fontWeight: 700, fontFamily: 'DM Sans,sans-serif' }}>Sim</button>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <TypeBadge type={emp.type} />
           <StatusBadge status={status} />
         </div>
+
         {status === 'active' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <ActionBtn onClick={() => onSetFolga(emp.id)} Icon={Umbrella} label="Folga"  bg={C.warningLight} color={C.warning} />
@@ -1019,48 +1479,6 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
             label={status === 'vacation' ? 'Encerrar férias' : 'Marcar como ativo'}
             bg={C.successLight} color={C.success} full />
         )}
-      </div>
-    </div>
-  )
-}
-
-// ─── RolesManager ─────────────────────────────────────────────────────────────
-
-function RolesManager({ roles, onChange }: { roles: string[]; onChange: (r: string[]) => void }) {
-  const [newRole, setNewRole] = useState('')
-  const addRole = () => {
-    const t = newRole.trim(); if (!t || roles.includes(t)) return
-    onChange([...roles, t]); setNewRole('')
-  }
-  const deleteRole = (r: string) => onChange(roles.filter(x => x !== r))
-  const moveRole = (idx: number, dir: -1 | 1) => {
-    const arr = [...roles]; const t = idx + dir
-    if (t < 0 || t >= arr.length) return
-    ;[arr[idx], arr[t]] = [arr[t], arr[idx]]; onChange(arr)
-  }
-  return (
-    <div>
-      <div style={{ fontSize: 13, color: C.textMid, marginBottom: 14, lineHeight: 1.5 }}>
-        Cargos disponíveis para seleção. A ordem define como aparecem na Escala.
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
-        {roles.map((role, idx) => (
-          <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` }}>
-            <GripVertical size={15} color={C.border} />
-            <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.text }}>{role}</span>
-            <button onClick={() => moveRole(idx, -1)} disabled={idx === 0} style={{ ...iconEditBtnSt, opacity: idx === 0 ? 0.35 : 1 }}><ChevronUp size={13} /></button>
-            <button onClick={() => moveRole(idx, 1)} disabled={idx === roles.length - 1} style={{ ...iconEditBtnSt, opacity: idx === roles.length - 1 ? 0.35 : 1 }}><ChevronDown size={13} /></button>
-            <button onClick={() => deleteRole(role)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '35' }}><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
-          </div>
-        ))}
-        {roles.length === 0 && <div style={{ color: C.textLight, fontSize: 13, padding: '12px 0', textAlign: 'center' }}>Nenhum cargo cadastrado</div>}
-      </div>
-      <FLabel>Adicionar novo cargo</FLabel>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <input placeholder="Ex: Garçom, Sommelier…" value={newRole}
-          onChange={e => setNewRole(e.target.value)} onKeyDown={e => e.key === 'Enter' && addRole()}
-          style={{ ...inputSt, flex: 1 }} />
-        <button onClick={addRole} style={{ ...primaryBtnSt, width: 'auto', padding: '12px 16px' }}><Plus size={16} /></button>
       </div>
     </div>
   )
@@ -1121,7 +1539,7 @@ function VacationForm({ emp, schedule, onConfirm, onEnd }: {
       <input type="date" value={start} onChange={e => setStart(e.target.value)} style={inputSt} />
       <FLabel style={{ marginTop: 12 }}>Fim das férias</FLabel>
       <input type="date" value={end} onChange={e => setEnd(e.target.value)} style={inputSt} />
-      <div style={{ fontSize: 11, color: C.textLight, marginTop: 8 }}>As datas aparecerão automaticamente na aba Escala.</div>
+      <div style={{ fontSize: 11, color: C.textLight, marginTop: 8 }}>As datas aparecerão na aba Escala.</div>
       <button onClick={() => canConfirm && onConfirm(emp.id, start, end)} style={{ ...primaryBtnSt, marginTop: 18, opacity: canConfirm ? 1 : 0.5 }}>
         <Calendar size={16} /> Confirmar férias
       </button>
@@ -1146,6 +1564,46 @@ function EditStationForm({ station, onSave }: { station: Station; onSave: (s: St
       <button onClick={() => onSave({ ...station, name: name.trim() || station.name, iconKey })} style={{ ...primaryBtnSt, marginTop: 20 }}>
         <Check size={16} /> Salvar praça
       </button>
+    </div>
+  )
+}
+
+function RolesManager({ roles, onChange }: { roles: string[]; onChange: (r: string[]) => void }) {
+  const [newRole, setNewRole] = useState('')
+  const addRole = () => {
+    const t = newRole.trim(); if (!t || roles.includes(t)) return
+    onChange([...roles, t]); setNewRole('')
+  }
+  const deleteRole = (r: string) => onChange(roles.filter(x => x !== r))
+  const moveRole = (idx: number, dir: -1 | 1) => {
+    const arr = [...roles]; const t = idx + dir
+    if (t < 0 || t >= arr.length) return
+    ;[arr[idx], arr[t]] = [arr[t], arr[idx]]; onChange(arr)
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textMid, marginBottom: 14, lineHeight: 1.5 }}>
+        Cargos disponíveis para seleção. A ordem define como aparecem na Escala.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+        {roles.map((role, idx) => (
+          <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` }}>
+            <GripVertical size={15} color={C.border} />
+            <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.text }}>{role}</span>
+            <button onClick={() => moveRole(idx, -1)} disabled={idx === 0} style={{ ...iconEditBtnSt, opacity: idx === 0 ? 0.35 : 1 }}><ChevronUp size={13} /></button>
+            <button onClick={() => moveRole(idx, 1)} disabled={idx === roles.length - 1} style={{ ...iconEditBtnSt, opacity: idx === roles.length - 1 ? 0.35 : 1 }}><ChevronDown size={13} /></button>
+            <button onClick={() => deleteRole(role)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '35' }}><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
+          </div>
+        ))}
+        {roles.length === 0 && <div style={{ color: C.textLight, fontSize: 13, padding: '12px 0', textAlign: 'center' }}>Nenhum cargo cadastrado</div>}
+      </div>
+      <FLabel>Adicionar novo cargo</FLabel>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input placeholder="Ex: Garçom, Sommelier…" value={newRole}
+          onChange={e => setNewRole(e.target.value)} onKeyDown={e => e.key === 'Enter' && addRole()}
+          style={{ ...inputSt, flex: 1 }} />
+        <button onClick={addRole} style={{ ...primaryBtnSt, width: 'auto', padding: '12px 16px' }}><Plus size={16} /></button>
+      </div>
     </div>
   )
 }
