@@ -1,5 +1,7 @@
-import { useState, CSSProperties, useRef } from 'react'
+import { useState, useEffect, useRef, CSSProperties, useCallback } from 'react'
 import './PatyHelp.css'
+import { supabase } from '../supabaseClient'
+import type { Employee, Station, Schedule, DayMark, EmpType, Status, Tab } from '../types'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -11,26 +13,11 @@ import {
   Plus, Pencil, X, Check, ChevronDown, ChevronRight, ChevronLeft,
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
   AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
-  CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase,
+  CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase, Loader2,
+  UserPlus,
 } from 'lucide-react'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type DayMark  = 'folga' | 'vacation'
-type Status   = 'active' | 'dayoff' | 'vacation'
-type EmpType  = 'efetivo' | 'temporario'
-type Tab      = 'hoje' | 'pracas' | 'escala' | 'equipe'
-type IconComp = React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>
-
-interface Employee {
-  id: number; name: string; role: string; initials: string; type: EmpType
-}
-interface Station {
-  id: number; name: string; iconKey: string; assignedId: number | null
-}
-type Schedule = Record<number, Record<string, DayMark>>
-
-// ─── Colors ───────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const C = {
   bg: '#EDE8E3', card: '#FFFFFF',
@@ -55,8 +42,7 @@ const EMP_COLORS = [
 ]
 const getEmpColor = (id: number) => EMP_COLORS[(id - 1) % EMP_COLORS.length]
 
-// ─── Station Icons ────────────────────────────────────────────────────────────
-
+type IconComp = React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>
 const STATION_ICONS: { key: string; Icon: IconComp; label: string }[] = [
   { key: 'flame',      Icon: Flame,          label: 'Quente'     },
   { key: 'snowflake',  Icon: Snowflake,       label: 'Frio'       },
@@ -81,70 +67,28 @@ const STATION_ICONS: { key: string; Icon: IconComp; label: string }[] = [
 ]
 const getIcon = (key: string): IconComp => STATION_ICONS.find(i => i.key === key)?.Icon ?? Flame
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const DAY_ABBR    = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB']
+const DAY_ABBR    = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB']
 const MONTH_NAMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-
 const getTodayISO = () => new Date().toISOString().split('T')[0]
 const cap         = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const fmtDate     = (iso: string) => { const [y,m,d] = iso.split('-'); return `${d}/${m}/${String(y).slice(2)}` }
+const TODAY       = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })
+const TODAY_ISO   = getTodayISO()
 
 const buildRange = (start: string, end: string, mark: DayMark): Record<string, DayMark> => {
-  const result: Record<string, DayMark> = {}
+  const out: Record<string, DayMark> = {}
   const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00'), c = new Date(s)
-  while (c <= e) { result[c.toISOString().split('T')[0]] = mark; c.setDate(c.getDate() + 1) }
-  return result
+  while (c <= e) { out[c.toISOString().split('T')[0]] = mark; c.setDate(c.getDate() + 1) }
+  return out
 }
-
 const getStatusForDate = (empId: number, schedule: Schedule, dateISO: string): Status => {
-  const mark = schedule[empId]?.[dateISO]
-  if (mark === 'folga') return 'dayoff'
-  if (mark === 'vacation') return 'vacation'
-  return 'active'
+  const m = schedule[empId]?.[dateISO]
+  return m === 'folga' ? 'dayoff' : m === 'vacation' ? 'vacation' : 'active'
 }
-
 const getVacationRange = (empId: number, schedule: Schedule) => {
-  const vDates = Object.entries(schedule[empId] ?? {}).filter(([,m]) => m === 'vacation').map(([d]) => d).sort()
-  if (!vDates.length) return null
-  return { start: vDates[0], end: vDates[vDates.length - 1] }
+  const vd = Object.entries(schedule[empId] ?? {}).filter(([,m]) => m === 'vacation').map(([d]) => d).sort()
+  return vd.length ? { start: vd[0], end: vd[vd.length - 1] } : null
 }
-
-// ─── Initial Data ─────────────────────────────────────────────────────────────
-
-const INIT_ROLES = ['Cozinheira','Cozinheiro','Confeiteira','Atendimento','Auxiliar','Barista','Expedição']
-
-const INIT_EMPLOYEES: Employee[] = [
-  { id: 1, name: 'Maria Silva',    role: 'Cozinheira',  initials: 'MS', type: 'efetivo'    },
-  { id: 2, name: 'João Santos',    role: 'Cozinheiro',  initials: 'JS', type: 'efetivo'    },
-  { id: 3, name: 'Ana Costa',      role: 'Confeiteira', initials: 'AC', type: 'temporario' },
-  { id: 4, name: 'Carlos Lima',    role: 'Atendimento', initials: 'CL', type: 'efetivo'    },
-  { id: 5, name: 'Pedro Rocha',    role: 'Auxiliar',    initials: 'PR', type: 'temporario' },
-  { id: 6, name: 'Lucia Ferreira', role: 'Barista',     initials: 'LF', type: 'efetivo'    },
-  { id: 7, name: 'Rafael Dias',    role: 'Expedição',   initials: 'RD', type: 'efetivo'    },
-]
-
-const INIT_STATIONS: Station[] = [
-  { id: 1, name: 'Cozinha Quente', iconKey: 'flame',     assignedId: 1    },
-  { id: 2, name: 'Cozinha Fria',   iconKey: 'snowflake', assignedId: 2    },
-  { id: 3, name: 'Confeitaria',    iconKey: 'chefhat',   assignedId: null },
-  { id: 4, name: 'Bar',            iconKey: 'wine',      assignedId: null },
-  { id: 5, name: 'Expedição',      iconKey: 'package',   assignedId: 7    },
-  { id: 6, name: 'Atendimento',    iconKey: 'bell',      assignedId: 4    },
-]
-
-const INIT_SCHEDULE: Schedule = {
-  3: { '2026-03-19': 'folga', '2026-03-20': 'folga', '2026-03-08': 'folga', '2026-03-09': 'folga' },
-  6: buildRange('2026-03-10', '2026-03-28', 'vacation'),
-  1: { '2026-03-22': 'folga', '2026-03-23': 'folga' },
-  2: { '2026-03-29': 'folga', '2026-03-30': 'folga' },
-  4: { '2026-03-08': 'folga', '2026-03-09': 'folga', '2026-03-29': 'folga', '2026-03-30': 'folga' },
-  7: { '2026-03-15': 'folga', '2026-03-16': 'folga', '2026-03-22': 'folga', '2026-03-23': 'folga' },
-  5: { '2026-03-15': 'folga', '2026-03-16': 'folga' },
-}
-
-const TODAY     = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })
-const TODAY_ISO = getTodayISO()
 
 const NAV_ITEMS = [
   { id: 'hoje'   as Tab, label: 'Dashboard', Icon: LayoutDashboard },
@@ -157,119 +101,281 @@ const NAV_ITEMS = [
 
 export default function PatyHelp() {
   const [tab,       setTab]       = useState<Tab>('hoje')
-  const [employees, setEmployees] = useState<Employee[]>(INIT_EMPLOYEES)
-  const [stations,  setStations]  = useState<Station[]>(INIT_STATIONS)
-  const [schedule,  setSchedule]  = useState<Schedule>(INIT_SCHEDULE)
-  const [roles,     setRoles]     = useState<string[]>(INIT_ROLES)
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [stations,  setStations]  = useState<Station[]>([])
+  const [schedule,  setSchedule]  = useState<Schedule>({})
+  const [roles,     setRoles]     = useState<string[]>([])
+  const [loading,   setLoading]   = useState(true)
+  const [error,     setError]     = useState<string | null>(null)
 
   // modals
-  const [assignModal,      setAssignModal]      = useState<number | null>(null)
+  const [assignModal,      setAssignModal]      = useState<{ stationId: number; mode: 'replace' | 'add' } | null>(null)
   const [editStationModal, setEditStationModal] = useState<Station | null>(null)
   const [editEmpModal,     setEditEmpModal]     = useState<Employee | null>(null)
   const [vacationModal,    setVacationModal]    = useState<Employee | null>(null)
   const [addEmployeeModal, setAddEmployeeModal] = useState(false)
   const [addStationModal,  setAddStationModal]  = useState(false)
   const [rolesModal,       setRolesModal]       = useState(false)
-
   const [newEmp, setNewEmp] = useState({ name: '', role: '', type: 'efetivo' as EmpType })
   const [newSt,  setNewSt]  = useState({ name: '', iconKey: 'flame' })
 
-  // derived
+  // ─ Load all data ─
+  const loadAll = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const [rolesRes, empsRes, stationsRes, stEmpRes, schedRes] = await Promise.all([
+        supabase.from('roles').select('id,name,sort_order').order('sort_order'),
+        supabase.from('employees').select('id,name,role_id,initials,type,sort_order,roles(name)').order('sort_order'),
+        supabase.from('stations').select('id,name,icon_key,sort_order').order('sort_order'),
+        supabase.from('station_employees').select('station_id,employee_id,sort_order').order('sort_order'),
+        supabase.from('schedule').select('employee_id,date,mark'),
+      ])
+      for (const r of [rolesRes, empsRes, stationsRes, stEmpRes, schedRes]) {
+        if (r.error) throw r.error
+      }
+
+      setRoles((rolesRes.data ?? []).map((r: any) => r.name))
+
+      const emps: Employee[] = (empsRes.data ?? []).map((e: any) => ({
+        id: e.id, name: e.name, initials: e.initials, type: e.type, sort_order: e.sort_order,
+        role: e.roles?.name ?? '',
+      }))
+      setEmployees(emps)
+
+      // Build station → assignedIds map
+      const stEmpMap: Record<number, number[]> = {}
+      for (const se of (stEmpRes.data ?? []) as any[]) {
+        if (!stEmpMap[se.station_id]) stEmpMap[se.station_id] = []
+        stEmpMap[se.station_id].push(se.employee_id)
+      }
+      const sts: Station[] = (stationsRes.data ?? []).map((s: any) => ({
+        id: s.id, name: s.name, iconKey: s.icon_key, sort_order: s.sort_order,
+        assignedIds: stEmpMap[s.id] ?? [],
+      }))
+      setStations(sts)
+
+      // Build schedule map
+      const sched: Schedule = {}
+      for (const row of (schedRes.data ?? []) as any[]) {
+        if (!sched[row.employee_id]) sched[row.employee_id] = {}
+        sched[row.employee_id][row.date] = row.mark
+      }
+      setSchedule(sched)
+    } catch (e: any) {
+      setError(e.message ?? 'Erro ao carregar dados')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadAll() }, [loadAll])
+
+  // ─ Derived ─
   const getStatus  = (e: Employee) => getStatusForDate(e.id, schedule, TODAY_ISO)
   const active     = employees.filter(e => getStatus(e) === 'active')
   const offToday   = employees.filter(e => getStatus(e) === 'dayoff')
   const onVacation = employees.filter(e => getStatus(e) === 'vacation')
-  const assigned   = stations.filter(s => s.assignedId !== null)
-  const unassigned = stations.filter(s => s.assignedId === null)
-  const getEmployee = (id: number | null) => employees.find(e => e.id === id)
+  const coveredSts = stations.filter(s => s.assignedIds.length > 0)
+  const uncovSts   = stations.filter(s => s.assignedIds.length === 0)
+  const getEmployee = (id: number) => employees.find(e => e.id === id)
 
-  // schedule helpers
-  const setDayMark = (empId: number, dateISO: string, mark: DayMark | null) =>
+  // ─ Schedule handlers ─
+  const toggleEscalaCell = async (empId: number, dateISO: string) => {
+    const cur = schedule[empId]?.[dateISO]
+    if (cur === 'vacation') return
+    const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
+    // Optimistic update
     setSchedule(prev => {
       const s = { ...(prev[empId] ?? {}) }
-      if (mark === null) delete s[dateISO]; else s[dateISO] = mark
+      if (newMark === null) delete s[dateISO]; else s[dateISO] = newMark
       return { ...prev, [empId]: s }
     })
+    if (newMark === null) {
+      await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', dateISO)
+    } else {
+      await supabase.from('schedule').upsert({ employee_id: empId, date: dateISO, mark: newMark })
+    }
+  }
 
-  const toggleEscalaCell = (empId: number, dateISO: string) =>
+  const setTodayMark = async (empId: number, mark: DayMark | null) => {
     setSchedule(prev => {
-      const cur = prev[empId]?.[dateISO]
-      if (cur === 'vacation') return prev
       const s = { ...(prev[empId] ?? {}) }
-      if (cur === 'folga') delete s[dateISO]; else s[dateISO] = 'folga'
+      if (mark === null) delete s[TODAY_ISO]; else s[TODAY_ISO] = mark
       return { ...prev, [empId]: s }
     })
+    if (mark === null) {
+      await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', TODAY_ISO)
+    } else {
+      await supabase.from('schedule').upsert({ employee_id: empId, date: TODAY_ISO, mark })
+    }
+    // Remove from station if going off
+    if (mark !== null) {
+      const updatedSts = stations.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) }))
+      setStations(updatedSts)
+      for (const s of stations) {
+        if (s.assignedIds.includes(empId))
+          await supabase.from('station_employees').delete().eq('station_id', s.id).eq('employee_id', empId)
+      }
+    }
+  }
 
-  const setTodayFolga = (empId: number) => setDayMark(empId, TODAY_ISO, 'folga')
-  const clearToday    = (empId: number) => setDayMark(empId, TODAY_ISO, null)
-
-  const confirmVacation = (empId: number, start: string, end: string) => {
-    setSchedule(prev => ({ ...prev, [empId]: { ...(prev[empId] ?? {}), ...buildRange(start, end, 'vacation') } }))
-    setStations(st => st.map(s => s.assignedId === empId ? { ...s, assignedId: null } : s))
+  const confirmVacation = async (empId: number, start: string, end: string) => {
+    const range = buildRange(start, end, 'vacation')
+    const rows = Object.entries(range).map(([date, mark]) => ({ employee_id: empId, date, mark }))
+    setSchedule(prev => ({ ...prev, [empId]: { ...(prev[empId] ?? {}), ...range } }))
+    // Remove from stations
+    setStations(prev => prev.map(s => ({ ...s, assignedIds: s.assignedIds.filter(id => id !== empId) })))
+    await supabase.from('schedule').upsert(rows)
+    for (const s of stations) {
+      if (s.assignedIds.includes(empId))
+        await supabase.from('station_employees').delete().eq('station_id', s.id).eq('employee_id', empId)
+    }
     setVacationModal(null)
   }
 
-  const endVacation = (empId: number) => {
+  const endVacation = async (empId: number) => {
+    const datesToRemove = Object.entries(schedule[empId] ?? {})
+      .filter(([d, m]) => m === 'vacation' && d >= TODAY_ISO).map(([d]) => d)
     setSchedule(prev => ({
-      ...prev,
-      [empId]: Object.fromEntries(Object.entries(prev[empId] ?? {}).filter(([d,m]) => !(m === 'vacation' && d >= TODAY_ISO)))
+      ...prev, [empId]: Object.fromEntries(Object.entries(prev[empId] ?? {}).filter(([d, m]) => !(m === 'vacation' && d >= TODAY_ISO)))
     }))
+    for (const date of datesToRemove)
+      await supabase.from('schedule').delete().eq('employee_id', empId).eq('date', date)
     setVacationModal(null)
   }
 
-  const assignEmployee = (stationId: number, empId: number) => {
-    setStations(prev => prev.map(s => s.id === stationId ? { ...s, assignedId: empId } : s))
+  // ─ Station handlers ─
+  const assignToStation = async (stationId: number, empId: number, mode: 'replace' | 'add') => {
+    const station = stations.find(s => s.id === stationId)!
+    let newIds: number[]
+    if (mode === 'replace') {
+      newIds = [empId]
+      // Delete all current + insert new
+      await supabase.from('station_employees').delete().eq('station_id', stationId)
+      await supabase.from('station_employees').insert({ station_id: stationId, employee_id: empId, sort_order: 0 })
+    } else {
+      if (station.assignedIds.includes(empId)) { setAssignModal(null); return }
+      newIds = [...station.assignedIds, empId]
+      await supabase.from('station_employees').insert({ station_id: stationId, employee_id: empId, sort_order: newIds.length - 1 })
+    }
+    setStations(prev => prev.map(s => s.id === stationId ? { ...s, assignedIds: newIds } : s))
     setAssignModal(null)
   }
-  const unassignStation = (stationId: number) =>
-    setStations(prev => prev.map(s => s.id === stationId ? { ...s, assignedId: null } : s))
 
-  const deleteStation = (stationId: number) =>
-    setStations(prev => prev.filter(s => s.id !== stationId))
+  const removeFromStation = async (stationId: number, empId: number) => {
+    setStations(prev => prev.map(s => s.id === stationId ? { ...s, assignedIds: s.assignedIds.filter(id => id !== empId) } : s))
+    await supabase.from('station_employees').delete().eq('station_id', stationId).eq('employee_id', empId)
+  }
 
-  const saveStation  = (u: Station)  => { setStations(p  => p.map(s => s.id === u.id ? u : s)); setEditStationModal(null) }
-  const saveEmployee = (u: Employee) => { setEmployees(p => p.map(e => e.id === u.id ? u : e)); setEditEmpModal(null) }
+  // ─ Station CRUD ─
+  const saveStation = async (updated: Station) => {
+    await supabase.from('stations').update({ name: updated.name, icon_key: updated.iconKey }).eq('id', updated.id)
+    setStations(prev => prev.map(s => s.id === updated.id ? { ...s, name: updated.name, iconKey: updated.iconKey } : s))
+    setEditStationModal(null)
+  }
 
-  // escala drag-reorder (only reorders employee display order; marks follow the employee)
-  const reorderEmployees = (fromId: number, toId: number) => {
+  const deleteStation = async (id: number) => {
+    await supabase.from('stations').delete().eq('id', id)
+    setStations(prev => prev.filter(s => s.id !== id))
+  }
+
+  const addStation = async () => {
+    if (!newSt.name.trim()) return
+    const sortOrder = stations.length
+    const { data, error } = await supabase.from('stations')
+      .insert({ name: newSt.name.trim(), icon_key: newSt.iconKey, sort_order: sortOrder })
+      .select().single()
+    if (!error && data) {
+      setStations(prev => [...prev, { id: data.id, name: data.name, iconKey: data.icon_key, sort_order: data.sort_order, assignedIds: [] }])
+    }
+    setNewSt({ name: '', iconKey: 'flame' }); setAddStationModal(false)
+  }
+
+  // ─ Employee CRUD ─
+  const saveEmployee = async (updated: Employee) => {
+    const roleRow = await supabase.from('roles').select('id').eq('name', updated.role).single()
+    const roleId  = roleRow.data?.id ?? null
+    await supabase.from('employees').update({ name: updated.name, role_id: roleId, type: updated.type, initials: updated.initials }).eq('id', updated.id)
+    setEmployees(prev => prev.map(e => e.id === updated.id ? { ...e, name: updated.name, role: updated.role, type: updated.type, initials: updated.initials } : e))
+    setEditEmpModal(null)
+  }
+
+  const addEmployee = async () => {
+    if (!newEmp.name.trim()) return
+    const roleName  = newEmp.role || roles[0] || ''
+    const initials  = newEmp.name.trim().split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
+    const sortOrder = employees.length
+    const roleRow   = await supabase.from('roles').select('id').eq('name', roleName).single()
+    const roleId    = roleRow.data?.id ?? null
+    const { data, error } = await supabase.from('employees')
+      .insert({ name: newEmp.name.trim(), role_id: roleId, initials, type: newEmp.type, sort_order: sortOrder })
+      .select().single()
+    if (!error && data)
+      setEmployees(prev => [...prev, { id: data.id, name: data.name, role: roleName, initials: data.initials, type: data.type, sort_order: data.sort_order }])
+    setNewEmp({ name: '', role: '', type: 'efetivo' }); setAddEmployeeModal(false)
+  }
+
+  // ─ Roles CRUD ─
+  const saveRoles = async (newRoles: string[]) => {
+    setRoles(newRoles)
+    // Sync: upsert all roles, remove missing
+    const { data: existing } = await supabase.from('roles').select('id,name')
+    const existingNames = (existing ?? []).map((r: any) => r.name)
+    const toAdd    = newRoles.filter(r => !existingNames.includes(r))
+    const toDelete = (existing ?? []).filter((r: any) => !newRoles.includes(r.name))
+    for (const [i, name] of newRoles.entries())
+      await supabase.from('roles').upsert({ name, sort_order: i }, { onConflict: 'name' })
+    for (const r of toDelete as any[])
+      await supabase.from('roles').delete().eq('id', r.id)
+  }
+
+  // ─ Drag reorder in escala ─
+  const reorderEmployees = async (fromId: number, toId: number) => {
     setEmployees(prev => {
       const arr = [...prev]
-      const fi = arr.findIndex(e => e.id === fromId)
-      const ti = arr.findIndex(e => e.id === toId)
+      const fi = arr.findIndex(e => e.id === fromId), ti = arr.findIndex(e => e.id === toId)
       if (fi === -1 || ti === -1 || fi === ti) return prev
-      const [item] = arr.splice(fi, 1)
-      arr.splice(ti, 0, item)
+      const [item] = arr.splice(fi, 1); arr.splice(ti, 0, item)
+      arr.forEach((e, i) => { e.sort_order = i })
+      // Persist new order
+      Promise.all(arr.map(e => supabase.from('employees').update({ sort_order: e.sort_order }).eq('id', e.id)))
       return arr
     })
   }
 
-  const addEmployee = () => {
-    if (!newEmp.name.trim()) return
-    const initials = newEmp.name.trim().split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
-    const id = Math.max(0, ...employees.map(e => e.id)) + 1
-    const role = newEmp.role || roles[0] || 'Funcionário'
-    setEmployees(p => [...p, { id, initials, name: newEmp.name.trim(), role, type: newEmp.type }])
-    setNewEmp({ name: '', role: '', type: 'efetivo' })
-    setAddEmployeeModal(false)
-  }
-
-  const addStation = () => {
-    if (!newSt.name.trim()) return
-    const id = Math.max(0, ...stations.map(s => s.id)) + 1
-    setStations(p => [...p, { id, assignedId: null, name: newSt.name.trim(), iconKey: newSt.iconKey }])
-    setNewSt({ name: '', iconKey: 'flame' })
-    setAddStationModal(false)
-  }
-
-  const pieData  = [
-    { name: 'Cobertas',    value: assigned.length,   color: C.success },
-    { name: 'Descobertas', value: unassigned.length,  color: C.danger  },
+  const pieData = [
+    { name: 'Cobertas',    value: coveredSts.length, color: C.success },
+    { name: 'Descobertas', value: uncovSts.length,   color: C.danger  },
   ]
   const weekData = [
-    { day: 'Seg', n: 5 }, { day: 'Ter', n: 6 }, { day: 'Qua', n: 5 },
-    { day: 'Qui', n: active.length }, { day: 'Sex', n: 6 }, { day: 'Sáb', n: 4 }, { day: 'Dom', n: 3 },
+    { day: 'Seg', n: 0 }, { day: 'Ter', n: 0 }, { day: 'Qua', n: 0 },
+    { day: 'Qui', n: active.length }, { day: 'Sex', n: 0 }, { day: 'Sáb', n: 0 }, { day: 'Dom', n: 0 },
   ]
-  const modalStation = stations.find(s => s.id === assignModal)
+
+  const modalStationId = assignModal?.stationId
+  const modalStation   = stations.find(s => s.id === modalStationId)
+
+  // ─ Render ─
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, flexDirection: 'column', gap: 14 }}>
+      <div style={{ width: 52, height: 52, borderRadius: 15, background: C.nav, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <ChefHat size={26} color="#FFF5EE" strokeWidth={1.8} />
+      </div>
+      <Loader2 size={22} color={C.textLight} style={{ animation: 'spin 1s linear infinite' }} />
+      <span style={{ fontFamily: 'DM Sans,sans-serif', color: C.textLight, fontSize: 14 }}>Carregando dados…</span>
+      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+    </div>
+  )
+
+  if (error) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, flexDirection: 'column', gap: 14, padding: 32 }}>
+      <AlertTriangle size={36} color={C.danger} />
+      <div style={{ fontFamily: 'DM Sans,sans-serif', color: C.text, fontWeight: 700, fontSize: 16 }}>Erro ao conectar ao banco</div>
+      <div style={{ fontFamily: 'DM Sans,sans-serif', color: C.textMid, fontSize: 13, textAlign: 'center', maxWidth: 340 }}>{error}</div>
+      <button onClick={loadAll} style={{ ...primaryBtnSt, width: 'auto', padding: '10px 24px' }}>Tentar novamente</button>
+    </div>
+  )
 
   return (
     <div className="ph-app">
@@ -305,23 +411,25 @@ export default function PatyHelp() {
         <main className="ph-main">
           {tab === 'hoje' && (
             <HojeTab employees={employees} active={active} offToday={offToday} onVacation={onVacation}
-              assigned={assigned} unassigned={unassigned} stations={stations} getEmployee={getEmployee}
+              coveredSts={coveredSts} uncovSts={uncovSts} stations={stations} getEmployee={getEmployee}
               schedule={schedule} pieData={pieData} weekData={weekData}
               goToPracas={() => setTab('pracas')} goToEquipe={() => setTab('equipe')} goToEscala={() => setTab('escala')} />
           )}
           {tab === 'escala' && (
             <EscalaTab employees={employees} schedule={schedule}
-              onToggleCell={toggleEscalaCell} onOpenVacation={e => setVacationModal(e)}
-              onReorder={reorderEmployees} />
+              onToggleCell={toggleEscalaCell} onOpenVacation={e => setVacationModal(e)} onReorder={reorderEmployees} />
           )}
           {tab === 'pracas' && (
             <PracasTab stations={stations} getEmployee={getEmployee}
-              onAssign={id => setAssignModal(id)} onEdit={s => setEditStationModal(s)}
-              onDelete={deleteStation} onAdd={() => setAddStationModal(true)} />
+              onAssign={(id, mode) => setAssignModal({ stationId: id, mode })}
+              onRemoveEmp={removeFromStation}
+              onEdit={s => setEditStationModal(s)} onDelete={deleteStation}
+              onAdd={() => setAddStationModal(true)} />
           )}
           {tab === 'equipe' && (
             <EquipeTab employees={employees} schedule={schedule}
-              onSetFolga={setTodayFolga} onClearToday={clearToday}
+              onSetFolga={id => setTodayMark(id, 'folga')}
+              onClearToday={id => setTodayMark(id, null)}
               onEdit={e => setEditEmpModal(e)} onVacation={e => setVacationModal(e)}
               onAdd={() => setAddEmployeeModal(true)} onManageRoles={() => setRolesModal(true)} />
           )}
@@ -333,65 +441,60 @@ export default function PatyHelp() {
         <div className="ph-mob-inner">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
             <button key={id} className={`ph-mob-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>
-              <Icon size={19} strokeWidth={tab === id ? 2.2 : 1.8} />
-              {label}
+              <Icon size={19} strokeWidth={tab === id ? 2.2 : 1.8} /> {label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* ── Modals ── */}
+      {/* ── Assign Modal ── */}
       {assignModal && modalStation && (
-        <BottomSheet onClose={() => setAssignModal(null)} title={`Responsável · ${modalStation.name}`}>
+        <BottomSheet onClose={() => setAssignModal(null)}
+          title={assignModal.mode === 'add' ? `Adicionar responsável · ${modalStation.name}` : `Trocar responsável · ${modalStation.name}`}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {active.map(emp => (
-              <button key={emp.id} onClick={() => assignEmployee(assignModal, emp.id)}
-                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${getEmpColor(emp.id).border}`, background: getEmpColor(emp.id).bg, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', textAlign: 'left' }}>
-                <Avatar emp={emp} size={40} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{emp.name}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                    <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
-                    <TypeBadge type={emp.type} small />
+            {active.map(emp => {
+              const alreadyIn = modalStation.assignedIds.includes(emp.id)
+              return (
+                <button key={emp.id} onClick={() => assignToStation(assignModal.stationId, emp.id, assignModal.mode)}
+                  disabled={assignModal.mode === 'add' && alreadyIn}
+                  style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${alreadyIn ? C.success + '60' : getEmpColor(emp.id).border}`, background: alreadyIn ? C.successLight : getEmpColor(emp.id).bg, cursor: alreadyIn && assignModal.mode === 'add' ? 'default' : 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', textAlign: 'left', opacity: alreadyIn && assignModal.mode === 'add' ? 0.6 : 1 }}>
+                  <Avatar emp={emp} size={40} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{emp.name}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                      <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
+                      <TypeBadge type={emp.type} small />
+                    </div>
                   </div>
-                </div>
-                {modalStation.assignedId === emp.id && <Check size={17} color={C.success} />}
-              </button>
-            ))}
-            {modalStation.assignedId && (
-              <button onClick={() => { unassignStation(assignModal); setAssignModal(null) }}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${C.danger}35`, background: C.dangerLight, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', marginTop: 4 }}>
-                <X size={15} color={C.danger} /><span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover responsável</span>
-              </button>
-            )}
+                  {alreadyIn && <Check size={17} color={C.success} />}
+                </button>
+              )
+            })}
           </div>
         </BottomSheet>
       )}
 
+      {/* ── Other modals ── */}
       {editStationModal && (
         <BottomSheet onClose={() => setEditStationModal(null)} title="Editar Praça">
           <EditStationForm station={editStationModal} onSave={saveStation} />
         </BottomSheet>
       )}
-
       {editEmpModal && (
         <BottomSheet onClose={() => setEditEmpModal(null)} title="Editar Funcionário">
           <EditEmployeeForm emp={editEmpModal} roles={roles} onSave={saveEmployee} />
         </BottomSheet>
       )}
-
       {vacationModal && (
         <BottomSheet onClose={() => setVacationModal(null)} title={`Férias · ${vacationModal.name}`}>
           <VacationForm emp={vacationModal} schedule={schedule} onConfirm={confirmVacation} onEnd={endVacation} />
         </BottomSheet>
       )}
-
       {rolesModal && (
         <BottomSheet onClose={() => setRolesModal(false)} title="Gerenciar Cargos">
-          <RolesManager roles={roles} onChange={setRoles} />
+          <RolesManager roles={roles} onChange={saveRoles} />
         </BottomSheet>
       )}
-
       {addEmployeeModal && (
         <BottomSheet onClose={() => setAddEmployeeModal(false)} title="Novo Funcionário">
           <FLabel>Nome completo</FLabel>
@@ -409,7 +512,6 @@ export default function PatyHelp() {
           </button>
         </BottomSheet>
       )}
-
       {addStationModal && (
         <BottomSheet onClose={() => setAddStationModal(false)} title="Nova Praça">
           <FLabel>Nome da praça</FLabel>
@@ -428,25 +530,25 @@ export default function PatyHelp() {
 
 // ─── HojeTab ──────────────────────────────────────────────────────────────────
 
-function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned, stations, getEmployee, schedule, pieData, weekData, goToPracas, goToEquipe, goToEscala }: {
+function HojeTab({ employees, active, offToday, onVacation, coveredSts, uncovSts, stations, getEmployee, schedule, pieData, weekData, goToPracas, goToEquipe, goToEscala }: {
   employees: Employee[]; active: Employee[]; offToday: Employee[]; onVacation: Employee[]
-  assigned: Station[]; unassigned: Station[]; stations: Station[]
-  getEmployee: (id: number | null) => Employee | undefined; schedule: Schedule
-  pieData: { name: string; value: number; color: string }[]
-  weekData: { day: string; n: number }[]
+  coveredSts: Station[]; uncovSts: Station[]; stations: Station[]
+  getEmployee: (id: number) => Employee | undefined; schedule: Schedule
+  pieData: any[]; weekData: any[]
   goToPracas: () => void; goToEquipe: () => void; goToEscala: () => void
 }) {
   const efetivos    = employees.filter(e => e.type === 'efetivo').length
   const temporarios = employees.filter(e => e.type === 'temporario').length
   const absent      = [...offToday, ...onVacation]
+
   return (
     <div>
       <span className="ph-section-label">Resumo do dia</span>
       <div className="ph-metrics">
-        <MetricCard value={active.length}    label="Trabalhando"     Icon={UserCheck}    accent={C.success} light={C.successLight} />
-        <MetricCard value={offToday.length}  label="De folga"        Icon={Umbrella}     accent={C.warning} light={C.warningLight} />
-        <MetricCard value={assigned.length}  label="Praças cobertas" Icon={TrendingUp}   accent={C.accent}  light={C.accentLight}  />
-        <MetricCard value={employees.length} label="Total da equipe" Icon={Users}        accent={C.nav}     light="#E8E0D8" dark />
+        <MetricCard value={active.length}     label="Trabalhando"     Icon={UserCheck}    accent={C.success} light={C.successLight} />
+        <MetricCard value={offToday.length}   label="De folga"        Icon={Umbrella}     accent={C.warning} light={C.warningLight} />
+        <MetricCard value={coveredSts.length} label="Praças cobertas" Icon={TrendingUp}   accent={C.accent}  light={C.accentLight}  />
+        <MetricCard value={employees.length}  label="Total da equipe" Icon={Users}        accent={C.nav}     light="#E8E0D8" dark />
       </div>
 
       <div className="ph-row-211">
@@ -455,8 +557,12 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Praças de hoje</span>
             <button onClick={goToPracas} style={linkBtnSt}>Gerenciar <ChevronRight size={12} /></button>
           </div>
+          {stations.length === 0 && (
+            <div style={{ padding: '20px 18px', color: C.textLight, fontSize: 13, textAlign: 'center' }}>Nenhuma praça cadastrada</div>
+          )}
           {stations.map((s, idx) => {
-            const emp = getEmployee(s.assignedId); const StIcon = getIcon(s.iconKey)
+            const StIcon = getIcon(s.iconKey)
+            const emps   = s.assignedIds.map(id => getEmployee(id)).filter(Boolean) as Employee[]
             return (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 18px', borderBottom: idx < stations.length - 1 ? `1px solid ${C.border}` : 'none' }}>
                 <div style={{ width: 34, height: 34, borderRadius: 10, background: C.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -464,11 +570,19 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
-                  {emp ? <div style={{ fontSize: 11, color: C.textMid, marginTop: 1 }}>{emp.name}</div>
-                       : <div style={{ fontSize: 11, color: C.danger, fontWeight: 600, marginTop: 1 }}>Sem responsável</div>}
+                  {emps.length > 0
+                    ? <div style={{ fontSize: 11, color: C.textMid, marginTop: 1 }}>{emps.map(e => e!.name.split(' ')[0]).join(', ')}</div>
+                    : <div style={{ fontSize: 11, color: C.danger, fontWeight: 600, marginTop: 1 }}>Sem responsável</div>
+                  }
                 </div>
-                {emp ? <Avatar emp={emp} size={28} />
-                     : <div style={{ width: 28, height: 28, borderRadius: '50%', background: C.dangerLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><AlertTriangle size={12} color={C.danger} /></div>}
+                <div style={{ display: 'flex', gap: -6 }}>
+                  {emps.slice(0, 3).map(e => <Avatar key={e!.id} emp={e!} size={26} />)}
+                  {emps.length === 0 && (
+                    <div style={{ width: 26, height: 26, borderRadius: '50%', background: C.dangerLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <AlertTriangle size={11} color={C.danger} />
+                    </div>
+                  )}
+                </div>
               </div>
             )
           })}
@@ -493,7 +607,7 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
             { label: 'Efetivos',    value: efetivos,          color: C.info    },
             { label: 'Temporários', value: temporarios,       color: C.teal    },
             { label: 'De férias',   value: onVacation.length, color: C.warning },
-            { label: 'Descobertas', value: unassigned.length, color: C.danger  },
+            { label: 'Descobertas', value: uncovSts.length,   color: C.danger  },
           ].map(({ label, value, color }) => (
             <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
               <span style={{ fontSize: 13, color: C.textMid, fontWeight: 500 }}>{label}</span>
@@ -510,8 +624,9 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Equipe hoje</span>
             <button onClick={goToEquipe} style={linkBtnSt}>Ver todos <ChevronRight size={12} /></button>
           </div>
+          {employees.length === 0 && <div style={{ padding: '20px 18px', color: C.textLight, fontSize: 13, textAlign: 'center' }}>Nenhum funcionário cadastrado</div>}
           {employees.slice(0, 5).map((emp, idx) => (
-            <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', borderBottom: idx < 4 ? `1px solid ${C.border}` : 'none' }}>
+            <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 18px', borderBottom: idx < Math.min(4, employees.length - 1) ? `1px solid ${C.border}` : 'none' }}>
               <Avatar emp={emp} size={30} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{emp.name}</div>
@@ -533,7 +648,7 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           {absent.length === 0 ? (
             <div style={{ textAlign: 'center', color: C.textLight, fontSize: 12, padding: '20px 0', lineHeight: 1.6 }}>
               <Check size={22} color={C.success} style={{ display: 'block', margin: '0 auto 8px' }} />
-              Todos estão<br />presentes!
+              {employees.length === 0 ? 'Sem funcionários' : 'Todos presentes!'}
             </div>
           ) : absent.map(emp => {
             const vac = getVacationRange(emp.id, schedule)
@@ -551,16 +666,16 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
         </div>
 
         <div className="ph-card ph-card-p" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
-          <div style={{ width: 52, height: 52, borderRadius: 16, background: unassigned.length > 0 ? C.dangerLight : C.successLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-            {unassigned.length > 0 ? <AlertTriangle size={26} color={C.danger} strokeWidth={1.8} /> : <Check size={26} color={C.success} strokeWidth={2} />}
+          <div style={{ width: 52, height: 52, borderRadius: 16, background: uncovSts.length > 0 ? C.dangerLight : C.successLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
+            {uncovSts.length > 0 ? <AlertTriangle size={26} color={C.danger} strokeWidth={1.8} /> : <Check size={26} color={C.success} strokeWidth={2} />}
           </div>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 8 }}>
-            {unassigned.length > 0 ? `${unassigned.length} praça${unassigned.length > 1 ? 's' : ''} sem cobertura` : 'Tudo coberto!'}
+            {uncovSts.length > 0 ? `${uncovSts.length} praça${uncovSts.length > 1 ? 's' : ''} sem cobertura` : stations.length === 0 ? 'Sem praças' : 'Tudo coberto!'}
           </div>
           <div style={{ fontSize: 12, color: C.textLight, lineHeight: 1.6, marginBottom: 16 }}>
-            {unassigned.length > 0 ? 'Atribua funcionários às praças abertas.' : 'Todas as praças têm responsável hoje. Ótimo!'}
+            {uncovSts.length > 0 ? 'Atribua funcionários às praças abertas.' : 'Todas as praças têm responsável hoje.'}
           </div>
-          {unassigned.length > 0 && <button onClick={goToPracas} style={{ ...primaryBtnSt, fontSize: 13, padding: '10px 16px' }}>Resolver agora</button>}
+          {uncovSts.length > 0 && <button onClick={goToPracas} style={{ ...primaryBtnSt, fontSize: 13, padding: '10px 16px' }}>Resolver agora</button>}
         </div>
       </div>
 
@@ -569,7 +684,7 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
         <ResponsiveContainer width="100%" height={180}>
           <PieChart>
             <Pie data={pieData} cx="50%" cy="50%" outerRadius={68} innerRadius={28} dataKey="value"
-              label={({ name, value }: { name: string; value: number }) => value > 0 ? `${name}: ${value}` : ''} labelLine={{ stroke: C.textLight }}>
+              label={({ name, value }: any) => value > 0 ? `${name}: ${value}` : ''} labelLine={{ stroke: C.textLight }}>
               {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
             </Pie>
             <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontFamily: 'DM Sans', fontSize: 12 }} />
@@ -581,7 +696,7 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
   )
 }
 
-// ─── EscalaTab — with drag-to-reorder rows ───────────────────────────────────
+// ─── EscalaTab ────────────────────────────────────────────────────────────────
 
 function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorder }: {
   employees: Employee[]; schedule: Schedule
@@ -596,7 +711,6 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
-
   const getDateISO = (d: number) => `${viewYear}-${String(viewMonth + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
   const getDow     = (d: number) => new Date(viewYear, viewMonth, d).getDay()
   const isWeekend  = (d: number) => { const w = getDow(d); return w === 0 || w === 6 }
@@ -609,12 +723,18 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
   const roles = [...new Set(employees.map(e => e.role))]
   const getDayMark = (empId: number, d: number): DayMark | null => (schedule[empId]?.[getDateISO(d)] as DayMark | undefined) ?? null
 
+  if (employees.length === 0) return (
+    <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
+      <Users size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
+      <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhum funcionário cadastrado</div>
+      <div style={{ fontSize: 13, marginTop: 4 }}>Adicione funcionários na aba Equipe</div>
+    </div>
+  )
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div>
-          <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
-        </div>
+        <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button onClick={goToday} style={{ ...outlineBtnSt, width: 'auto', padding: '6px 12px', fontSize: 12 }}>Hoje</button>
           <button onClick={prevMonth} style={iconEditBtnSt}><ChevronLeft size={15} /></button>
@@ -622,23 +742,18 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
           <button onClick={nextMonth} style={iconEditBtnSt}><ChevronRight size={15} /></button>
         </div>
       </div>
-
-      {/* Legend */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {[
-            { bg: C.dangerLight,   border: '#F0B0B0', color: C.danger, text: 'F',   label: 'Folga — clique para marcar/desmarcar' },
-            { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias — via ícone 📅 na linha' },
-          ].map(l => (
-            <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
-              <div style={{ minWidth: l.text === 'FÉR' ? 28 : 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
-              {l.label}
-            </div>
-          ))}
-        </div>
+        {[
+          { bg: C.dangerLight, border: '#F0B0B0', color: C.danger, text: 'F', label: 'Folga — clique para marcar' },
+          { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias — via ícone 📅' },
+        ].map(l => (
+          <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
+            <div style={{ minWidth: l.text === 'FÉR' ? 28 : 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
+            {l.label}
+          </div>
+        ))}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
-          <GripVertical size={14} color={C.textLight} />
-          Arraste o nome para reordenar
+          <GripVertical size={14} color={C.textLight} /> Arraste para reordenar
         </div>
       </div>
 
@@ -646,9 +761,7 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
         <table className="ph-escala-table">
           <thead>
             <tr>
-              <th className="ph-escala-name-col" style={{ background: C.nav, color: '#FFF5EE', fontSize: 10, fontWeight: 700, padding: '9px 14px', textAlign: 'left', borderRight: `2px solid rgba(255,255,255,0.15)`, letterSpacing: '0.5px' }}>
-                FUNCIONÁRIO
-              </th>
+              <th className="ph-escala-name-col" style={{ background: C.nav, color: '#FFF5EE', fontSize: 10, fontWeight: 700, padding: '9px 14px', textAlign: 'left', borderRight: `2px solid rgba(255,255,255,0.15)`, letterSpacing: '0.5px' }}>FUNCIONÁRIO</th>
               {days.map(d => {
                 const dow = getDow(d); const weekend = isWeekend(d); const today = isToday(d)
                 return (
@@ -664,15 +777,11 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
             {roles.map(role => (
               <>
                 <tr key={`g-${role}`}>
-                  <td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
-                    {role}
-                  </td>
+                  <td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>{role}</td>
                 </tr>
                 {employees.filter(e => e.role === role).map(emp => (
                   <tr key={emp.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                    {/* Draggable name cell */}
-                    <td className="ph-escala-name-col-td"
-                      draggable
+                    <td className="ph-escala-name-col-td" draggable
                       onDragStart={() => { dragIdRef.current = emp.id }}
                       onDragOver={e => e.preventDefault()}
                       onDrop={() => { if (dragIdRef.current !== null && dragIdRef.current !== emp.id) onReorder(dragIdRef.current, emp.id); dragIdRef.current = null }}
@@ -681,9 +790,7 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
                         <GripVertical size={13} color={C.border} strokeWidth={2} style={{ flexShrink: 0 }} />
                         <Avatar emp={emp} size={26} />
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 12, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {emp.name.split(' ').slice(0, 2).join(' ')}
-                          </div>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{emp.name.split(' ').slice(0, 2).join(' ')}</div>
                           <TypeBadge type={emp.type} small />
                         </div>
                         <button onClick={() => onOpenVacation(emp)} title="Editar férias"
@@ -692,18 +799,15 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
                         </button>
                       </div>
                     </td>
-                    {/* Day cells */}
                     {days.map(d => {
-                      const mark = getDayMark(emp.id, d)
-                      const weekend = isWeekend(d); const today = isToday(d)
+                      const mark = getDayMark(emp.id, d); const weekend = isWeekend(d); const today = isToday(d)
                       const isVac = mark === 'vacation'; const isF = mark === 'folga'
                       let bg = weekend ? '#FAF6F2' : '#FFFFFF'
                       if (today && !mark) bg = '#FFF8F4'
-                      if (isF)  bg = C.dangerLight
+                      if (isF) bg = C.dangerLight
                       if (isVac) bg = C.vacationLight
                       return (
-                        <td key={d}
-                          className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`}
+                        <td key={d} className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`}
                           onClick={() => !isVac && onToggleCell(emp.id, getDateISO(d))}
                           style={{ background: bg, color: isVac ? '#8B6A00' : isF ? C.danger : 'transparent', fontWeight: 800, fontSize: isVac ? 8 : 11, borderRight: today ? `1px solid ${C.accent}40` : `1px solid ${C.border}` }}>
                           {isVac ? 'FÉR' : isF ? 'F' : ''}
@@ -721,12 +825,13 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorde
   )
 }
 
-// ─── PracasTab — with delete button ──────────────────────────────────────────
+// ─── PracasTab ────────────────────────────────────────────────────────────────
 
-function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }: {
-  stations: Station[]; getEmployee: (id: number | null) => Employee | undefined
-  onAssign: (id: number) => void; onEdit: (s: Station) => void
-  onDelete: (id: number) => void; onAdd: () => void
+function PracasTab({ stations, getEmployee, onAssign, onRemoveEmp, onEdit, onDelete, onAdd }: {
+  stations: Station[]; getEmployee: (id: number) => Employee | undefined
+  onAssign: (id: number, mode: 'replace' | 'add') => void
+  onRemoveEmp: (stationId: number, empId: number) => void
+  onEdit: (s: Station) => void; onDelete: (id: number) => void; onAdd: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
   return (
@@ -735,12 +840,22 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }:
         <span className="ph-section-label" style={{ marginBottom: 0 }}>Praças do restaurante</span>
         <button onClick={onAdd} style={addBtnSt}><Plus size={14} strokeWidth={2.5} /> Nova praça</button>
       </div>
+      {stations.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
+          <UtensilsCrossed size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
+          <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhuma praça cadastrada</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>Clique em "+ Nova praça" para começar</div>
+        </div>
+      )}
       <div className="ph-stations-grid">
         {stations.map(s => {
-          const emp = getEmployee(s.assignedId); const StIcon = getIcon(s.iconKey); const covered = !!emp
+          const emps    = s.assignedIds.map(id => getEmployee(id)).filter(Boolean) as Employee[]
+          const StIcon  = getIcon(s.iconKey)
+          const covered = emps.length > 0
           return (
             <div key={s.id} className="ph-card" style={{ borderLeft: `4px solid ${covered ? C.success : C.danger}` }}>
               <div className="ph-card-p">
+                {/* Header */}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
                   <div style={{ width: 46, height: 46, borderRadius: 13, background: C.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     <StIcon size={22} color={C.accent} strokeWidth={1.8} />
@@ -749,18 +864,13 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }:
                     <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>{s.name}</div>
                     <StatusBadge status={covered ? 'covered' : 'empty'} />
                   </div>
-                  {/* Edit + Delete buttons */}
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={() => onEdit(s)} style={iconEditBtnSt} title="Editar praça">
-                      <Pencil size={13} strokeWidth={2} />
-                    </button>
-                    <button onClick={() => setConfirmDelete(s.id)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }} title="Apagar praça">
-                      <Trash2 size={13} strokeWidth={2} color={C.danger} />
-                    </button>
+                    <button onClick={() => onEdit(s)} style={iconEditBtnSt} title="Editar"><Pencil size={13} strokeWidth={2} /></button>
+                    <button onClick={() => setConfirmDelete(s.id)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }} title="Apagar"><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
                   </div>
                 </div>
 
-                {/* Delete confirm inline */}
+                {/* Confirm delete */}
                 {confirmDelete === s.id && (
                   <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}35`, borderRadius: 11, padding: '10px 12px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>Apagar "{s.name}"?</span>
@@ -771,16 +881,25 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }:
                   </div>
                 )}
 
-                {emp ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 11, background: getEmpColor(emp.id).bg, border: `1px solid ${getEmpColor(emp.id).border}`, marginBottom: 12 }}>
-                    <Avatar emp={emp} size={38} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{emp.name}</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
-                        <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
-                        <TypeBadge type={emp.type} small />
+                {/* Assigned employees list */}
+                {emps.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    {emps.map(emp => (
+                      <div key={emp!.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 11, background: getEmpColor(emp!.id).bg, border: `1px solid ${getEmpColor(emp!.id).border}` }}>
+                        <Avatar emp={emp!} size={32} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{emp!.name}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 1 }}>
+                            <span style={{ fontSize: 11, color: C.textMid }}>{emp!.role}</span>
+                            <TypeBadge type={emp!.type} small />
+                          </div>
+                        </div>
+                        <button onClick={() => onRemoveEmp(s.id, emp!.id)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textLight, padding: 4, flexShrink: 0 }} title="Remover">
+                          <X size={14} strokeWidth={2} />
+                        </button>
                       </div>
-                    </div>
+                    ))}
                   </div>
                 ) : (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 11, background: C.dangerLight, marginBottom: 12 }}>
@@ -788,9 +907,18 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }:
                     <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>Nenhum funcionário atribuído</span>
                   </div>
                 )}
-                <button onClick={() => onAssign(s.id)} style={primaryBtnSt}>
-                  {emp ? 'Trocar responsável' : 'Atribuir funcionário'}
-                </button>
+
+                {/* Action buttons */}
+                <div style={{ display: 'grid', gridTemplateColumns: emps.length > 0 ? '1fr 1fr' : '1fr', gap: 8 }}>
+                  {emps.length > 0 && (
+                    <button onClick={() => onAssign(s.id, 'replace')} style={{ ...primaryBtnSt, background: C.bg, color: C.textMid, border: `1px solid ${C.border}`, fontSize: 13 }}>
+                      Trocar
+                    </button>
+                  )}
+                  <button onClick={() => onAssign(s.id, 'add')} style={{ ...primaryBtnSt, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                    <UserPlus size={15} /> {emps.length === 0 ? 'Atribuir funcionário' : 'Adicionar'}
+                  </button>
+                </div>
               </div>
             </div>
           )
@@ -811,43 +939,42 @@ function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVa
   const active   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'active')
   const dayoff   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'dayoff')
   const vacation = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'vacation')
-
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
         <span className="ph-section-label" style={{ marginBottom: 0 }}>Equipe</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          {/* Manage roles button */}
           <button onClick={onManageRoles} style={{ ...addBtnSt, background: C.card, color: C.textMid, border: `1px solid ${C.border}` }}>
             <Briefcase size={14} strokeWidth={2} /> Cargos
           </button>
           <button onClick={onAdd} style={addBtnSt}><Plus size={14} strokeWidth={2.5} /> Funcionário</button>
         </div>
       </div>
-      {active.length > 0 && (
-        <>
-          <GroupLabel>Trabalhando hoje · {active.length}</GroupLabel>
-          <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
-            {active.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
-          </div>
-        </>
+      {employees.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '60px 20px', color: C.textLight }}>
+          <Users size={40} strokeWidth={1.5} style={{ marginBottom: 12 }} />
+          <div style={{ fontWeight: 600, fontSize: 15 }}>Nenhum funcionário cadastrado</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>Clique em "+ Funcionário" para começar</div>
+        </div>
       )}
-      {dayoff.length > 0 && (
-        <>
-          <GroupLabel>De folga · {dayoff.length}</GroupLabel>
-          <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
-            {dayoff.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
-          </div>
-        </>
-      )}
-      {vacation.length > 0 && (
-        <>
-          <GroupLabel>De férias · {vacation.length}</GroupLabel>
-          <div className="ph-equipe-grid">
-            {vacation.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
-          </div>
-        </>
-      )}
+      {active.length > 0 && (<>
+        <GroupLabel>Trabalhando hoje · {active.length}</GroupLabel>
+        <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
+          {active.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+        </div>
+      </>)}
+      {dayoff.length > 0 && (<>
+        <GroupLabel>De folga · {dayoff.length}</GroupLabel>
+        <div className="ph-equipe-grid" style={{ marginBottom: 20 }}>
+          {dayoff.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+        </div>
+      </>)}
+      {vacation.length > 0 && (<>
+        <GroupLabel>De férias · {vacation.length}</GroupLabel>
+        <div className="ph-equipe-grid">
+          {vacation.map(e => <EmployeeCard key={e.id} emp={e} schedule={schedule} onSetFolga={onSetFolga} onClearToday={onClearToday} onEdit={onEdit} onVacation={onVacation} />)}
+        </div>
+      </>)}
     </div>
   )
 }
@@ -876,7 +1003,7 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
               </div>
             )}
           </div>
-          <button onClick={() => onEdit(emp)} style={iconEditBtnSt} title="Editar funcionário"><Pencil size={13} strokeWidth={2} /></button>
+          <button onClick={() => onEdit(emp)} style={iconEditBtnSt}><Pencil size={13} strokeWidth={2} /></button>
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <TypeBadge type={emp.type} />
@@ -901,67 +1028,45 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
 
 function RolesManager({ roles, onChange }: { roles: string[]; onChange: (r: string[]) => void }) {
   const [newRole, setNewRole] = useState('')
-
   const addRole = () => {
-    const trimmed = newRole.trim()
-    if (!trimmed || roles.includes(trimmed)) return
-    onChange([...roles, trimmed])
-    setNewRole('')
+    const t = newRole.trim(); if (!t || roles.includes(t)) return
+    onChange([...roles, t]); setNewRole('')
   }
-
-  const deleteRole = (role: string) => onChange(roles.filter(r => r !== role))
-
+  const deleteRole = (r: string) => onChange(roles.filter(x => x !== r))
   const moveRole = (idx: number, dir: -1 | 1) => {
-    const arr = [...roles]
-    const target = idx + dir
-    if (target < 0 || target >= arr.length) return
-    ;[arr[idx], arr[target]] = [arr[target], arr[idx]]
-    onChange(arr)
+    const arr = [...roles]; const t = idx + dir
+    if (t < 0 || t >= arr.length) return
+    ;[arr[idx], arr[t]] = [arr[t], arr[idx]]; onChange(arr)
   }
-
   return (
     <div>
       <div style={{ fontSize: 13, color: C.textMid, marginBottom: 14, lineHeight: 1.5 }}>
-        Cargos disponíveis na seleção de funcionários. Use as setas para ordenar como aparecem na Escala.
+        Cargos disponíveis para seleção. A ordem define como aparecem na Escala.
       </div>
-
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
         {roles.map((role, idx) => (
           <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` }}>
             <GripVertical size={15} color={C.border} />
             <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.text }}>{role}</span>
-            {/* Up / Down */}
-            <button onClick={() => moveRole(idx, -1)} disabled={idx === 0}
-              style={{ ...iconEditBtnSt, opacity: idx === 0 ? 0.35 : 1 }}>
-              <ChevronUp size={13} />
-            </button>
-            <button onClick={() => moveRole(idx, 1)} disabled={idx === roles.length - 1}
-              style={{ ...iconEditBtnSt, opacity: idx === roles.length - 1 ? 0.35 : 1 }}>
-              <ChevronDown size={13} />
-            </button>
-            <button onClick={() => deleteRole(role)}
-              style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '35' }}>
-              <Trash2 size={13} strokeWidth={2} color={C.danger} />
-            </button>
+            <button onClick={() => moveRole(idx, -1)} disabled={idx === 0} style={{ ...iconEditBtnSt, opacity: idx === 0 ? 0.35 : 1 }}><ChevronUp size={13} /></button>
+            <button onClick={() => moveRole(idx, 1)} disabled={idx === roles.length - 1} style={{ ...iconEditBtnSt, opacity: idx === roles.length - 1 ? 0.35 : 1 }}><ChevronDown size={13} /></button>
+            <button onClick={() => deleteRole(role)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '35' }}><Trash2 size={13} strokeWidth={2} color={C.danger} /></button>
           </div>
         ))}
+        {roles.length === 0 && <div style={{ color: C.textLight, fontSize: 13, padding: '12px 0', textAlign: 'center' }}>Nenhum cargo cadastrado</div>}
       </div>
-
       <FLabel>Adicionar novo cargo</FLabel>
       <div style={{ display: 'flex', gap: 8 }}>
         <input placeholder="Ex: Garçom, Sommelier…" value={newRole}
-          onChange={e => setNewRole(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addRole()}
+          onChange={e => setNewRole(e.target.value)} onKeyDown={e => e.key === 'Enter' && addRole()}
           style={{ ...inputSt, flex: 1 }} />
-        <button onClick={addRole} style={{ ...primaryBtnSt, width: 'auto', padding: '12px 16px' }}>
-          <Plus size={16} />
-        </button>
+        <button onClick={addRole} style={{ ...primaryBtnSt, width: 'auto', padding: '12px 16px' }}><Plus size={16} /></button>
       </div>
     </div>
   )
 }
 
-// ─── Edit Employee Form (role dropdown) ───────────────────────────────────────
+// ─── Form components ──────────────────────────────────────────────────────────
 
 function EditEmployeeForm({ emp, roles, onSave }: { emp: Employee; roles: string[]; onSave: (e: Employee) => void }) {
   const [name, setName] = useState(emp.name)
@@ -981,7 +1086,6 @@ function EditEmployeeForm({ emp, roles, onSave }: { emp: Employee; roles: string
       <FLabel style={{ marginTop: 12 }}>Cargo</FLabel>
       <select value={role} onChange={e => setRole(e.target.value)} style={selectSt}>
         {roles.map(r => <option key={r} value={r}>{r}</option>)}
-        {/* If current role not in list, keep it as an option */}
         {!roles.includes(emp.role) && <option value={emp.role}>{emp.role}</option>}
       </select>
       <FLabel style={{ marginTop: 12 }}>Tipo de contrato</FLabel>
@@ -993,18 +1097,15 @@ function EditEmployeeForm({ emp, roles, onSave }: { emp: Employee; roles: string
   )
 }
 
-// ─── Vacation Form ────────────────────────────────────────────────────────────
-
 function VacationForm({ emp, schedule, onConfirm, onEnd }: {
   emp: Employee; schedule: Schedule
-  onConfirm: (id: number, start: string, end: string) => void
-  onEnd: (id: number) => void
+  onConfirm: (id: number, s: string, e: string) => void; onEnd: (id: number) => void
 }) {
   const existing = getVacationRange(emp.id, schedule)
   const [start, setStart] = useState(existing?.start ?? '')
   const [end,   setEnd]   = useState(existing?.end   ?? '')
-  const canConfirm    = start && end && end >= start
-  const isOnVacation  = getStatusForDate(emp.id, schedule, TODAY_ISO) === 'vacation'
+  const canConfirm   = start && end && end >= start
+  const isOnVacation = getStatusForDate(emp.id, schedule, TODAY_ISO) === 'vacation'
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
@@ -1012,8 +1113,7 @@ function VacationForm({ emp, schedule, onConfirm, onEnd }: {
         <div>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{emp.name}</div>
           <div style={{ display: 'flex', gap: 5, marginTop: 3 }}>
-            <TypeBadge type={emp.type} small />
-            <span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
+            <TypeBadge type={emp.type} small /><span style={{ fontSize: 12, color: C.textMid }}>{emp.role}</span>
           </div>
         </div>
       </div>
@@ -1033,8 +1133,6 @@ function VacationForm({ emp, schedule, onConfirm, onEnd }: {
     </div>
   )
 }
-
-// ─── Edit Station Form ────────────────────────────────────────────────────────
 
 function EditStationForm({ station, onSave }: { station: Station; onSave: (s: Station) => void }) {
   const [name,    setName]    = useState(station.name)
@@ -1171,43 +1269,10 @@ function IconPicker({ selected, onSelect }: { selected: string; onSelect: (k: st
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const inputSt: CSSProperties = {
-  width: '100%', boxSizing: 'border-box', padding: '12px 14px',
-  borderRadius: 12, border: `1.5px solid ${C.border}`,
-  fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text, outline: 'none',
-}
-const selectSt: CSSProperties = {
-  width: '100%', boxSizing: 'border-box', padding: '12px 14px',
-  borderRadius: 12, border: `1.5px solid ${C.border}`,
-  fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text,
-  outline: 'none', cursor: 'pointer', appearance: 'none',
-  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239A7866' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
-  backgroundRepeat: 'no-repeat', backgroundPosition: 'right 14px center',
-}
-const primaryBtnSt: CSSProperties = {
-  width: '100%', padding: '13px', background: C.accent, color: '#FFF5EE',
-  border: 'none', borderRadius: 12, fontWeight: 700, fontSize: 14,
-  cursor: 'pointer', fontFamily: 'DM Sans,sans-serif',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-}
-const addBtnSt: CSSProperties = {
-  background: C.accent, color: '#FFF5EE', border: 'none', borderRadius: 10,
-  padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-  fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', gap: 5,
-}
-const outlineBtnSt: CSSProperties = {
-  width: '100%', padding: '11px', background: 'transparent', color: C.textMid,
-  border: `1.5px solid ${C.border}`, borderRadius: 12, fontWeight: 600, fontSize: 13,
-  cursor: 'pointer', fontFamily: 'DM Sans,sans-serif',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-}
-const linkBtnSt: CSSProperties = {
-  fontSize: 12, color: C.accent, fontWeight: 600, background: 'none',
-  border: 'none', cursor: 'pointer', fontFamily: 'DM Sans,sans-serif',
-  display: 'flex', alignItems: 'center', gap: 2,
-}
-const iconEditBtnSt: CSSProperties = {
-  width: 30, height: 30, borderRadius: 8, background: C.bg,
-  border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center',
-  justifyContent: 'center', cursor: 'pointer', color: C.textMid, flexShrink: 0,
-}
+const inputSt: CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '12px 14px', borderRadius: 12, border: `1.5px solid ${C.border}`, fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text, outline: 'none' }
+const selectSt: CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '12px 14px', borderRadius: 12, border: `1.5px solid ${C.border}`, fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text, outline: 'none', cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239A7866' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 14px center' }
+const primaryBtnSt: CSSProperties = { width: '100%', padding: '13px', background: C.accent, color: '#FFF5EE', border: 'none', borderRadius: 12, fontWeight: 700, fontSize: 14, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }
+const addBtnSt: CSSProperties = { background: C.accent, color: '#FFF5EE', border: 'none', borderRadius: 10, padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', gap: 5 }
+const outlineBtnSt: CSSProperties = { width: '100%', padding: '11px', background: 'transparent', color: C.textMid, border: `1.5px solid ${C.border}`, borderRadius: 12, fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }
+const linkBtnSt: CSSProperties = { fontSize: 12, color: C.accent, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', gap: 2 }
+const iconEditBtnSt: CSSProperties = { width: 30, height: 30, borderRadius: 8, background: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textMid, flexShrink: 0 }
