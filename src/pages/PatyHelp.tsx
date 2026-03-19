@@ -1,4 +1,4 @@
-import { useState, CSSProperties } from 'react'
+import { useState, CSSProperties, useRef } from 'react'
 import './PatyHelp.css'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -11,7 +11,7 @@ import {
   Plus, Pencil, X, Check, ChevronDown, ChevronRight, ChevronLeft,
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
   AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
-  CalendarDays,
+  CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -25,40 +25,25 @@ type IconComp = React.ComponentType<{ size?: number; color?: string; strokeWidth
 interface Employee {
   id: number; name: string; role: string; initials: string; type: EmpType
 }
-
 interface Station {
   id: number; name: string; iconKey: string; assignedId: number | null
 }
-
-// schedule: empId → { 'YYYY-MM-DD' → 'folga' | 'vacation' }
 type Schedule = Record<number, Record<string, DayMark>>
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 
 const C = {
-  bg:           '#EDE8E3',
-  card:         '#FFFFFF',
-  accent:       '#C1440E',
-  accentLight:  '#FDE8DC',
-  success:      '#2A7A4F',
-  successLight: '#DEF2EA',
-  warning:      '#B5690A',
-  warningLight: '#FEF2D8',
-  danger:       '#B83232',
-  dangerLight:  '#FCDEDE',
-  info:         '#1B5FA8',
-  infoLight:    '#E6EFFE',
-  teal:         '#0D7477',
-  tealLight:    '#DDF3F3',
-  vacation:     '#F5C518',
-  vacationLight:'#FFFAE0',
-  text:         '#18080A',
-  textMid:      '#6B4435',
-  textLight:    '#9A7866',
-  border:       '#E8E0D8',
-  nav:          '#1A0804',
+  bg: '#EDE8E3', card: '#FFFFFF',
+  accent: '#C1440E', accentLight: '#FDE8DC',
+  success: '#2A7A4F', successLight: '#DEF2EA',
+  warning: '#B5690A', warningLight: '#FEF2D8',
+  danger: '#B83232', dangerLight: '#FCDEDE',
+  info: '#1B5FA8', infoLight: '#E6EFFE',
+  teal: '#0D7477', tealLight: '#DDF3F3',
+  vacation: '#F5C518', vacationLight: '#FFFAE0',
+  text: '#18080A', textMid: '#6B4435', textLight: '#9A7866',
+  border: '#E8E0D8', nav: '#1A0804',
 }
-
 const EMP_COLORS = [
   { bg: '#FDE8DC', text: '#7A2200', border: '#EEC0A0' },
   { bg: '#DEF2EA', text: '#1A5838', border: '#A8D8C0' },
@@ -70,7 +55,7 @@ const EMP_COLORS = [
 ]
 const getEmpColor = (id: number) => EMP_COLORS[(id - 1) % EMP_COLORS.length]
 
-// ─── Station icons ────────────────────────────────────────────────────────────
+// ─── Station Icons ────────────────────────────────────────────────────────────
 
 const STATION_ICONS: { key: string; Icon: IconComp; label: string }[] = [
   { key: 'flame',      Icon: Flame,          label: 'Quente'     },
@@ -98,40 +83,36 @@ const getIcon = (key: string): IconComp => STATION_ICONS.find(i => i.key === key
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const DAY_ABBR   = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB']
+const DAY_ABBR    = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB']
 const MONTH_NAMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 
 const getTodayISO = () => new Date().toISOString().split('T')[0]
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
-const fmtDate = (iso: string) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${String(y).slice(2)}` }
+const cap         = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const fmtDate     = (iso: string) => { const [y,m,d] = iso.split('-'); return `${d}/${m}/${String(y).slice(2)}` }
 
 const buildRange = (start: string, end: string, mark: DayMark): Record<string, DayMark> => {
   const result: Record<string, DayMark> = {}
-  const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00')
-  const c = new Date(s)
-  while (c <= e) {
-    result[c.toISOString().split('T')[0]] = mark
-    c.setDate(c.getDate() + 1)
-  }
+  const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00'), c = new Date(s)
+  while (c <= e) { result[c.toISOString().split('T')[0]] = mark; c.setDate(c.getDate() + 1) }
   return result
 }
 
-// Derive employee status from schedule for a given date
 const getStatusForDate = (empId: number, schedule: Schedule, dateISO: string): Status => {
   const mark = schedule[empId]?.[dateISO]
-  if (mark === 'folga')    return 'dayoff'
+  if (mark === 'folga') return 'dayoff'
   if (mark === 'vacation') return 'vacation'
   return 'active'
 }
 
 const getVacationRange = (empId: number, schedule: Schedule) => {
-  const empSch = schedule[empId] ?? {}
-  const vDates = Object.entries(empSch).filter(([, m]) => m === 'vacation').map(([d]) => d).sort()
+  const vDates = Object.entries(schedule[empId] ?? {}).filter(([,m]) => m === 'vacation').map(([d]) => d).sort()
   if (!vDates.length) return null
   return { start: vDates[0], end: vDates[vDates.length - 1] }
 }
 
-// ─── Initial data ─────────────────────────────────────────────────────────────
+// ─── Initial Data ─────────────────────────────────────────────────────────────
+
+const INIT_ROLES = ['Cozinheira','Cozinheiro','Confeiteira','Atendimento','Auxiliar','Barista','Expedição']
 
 const INIT_EMPLOYEES: Employee[] = [
   { id: 1, name: 'Maria Silva',    role: 'Cozinheira',  initials: 'MS', type: 'efetivo'    },
@@ -152,7 +133,6 @@ const INIT_STATIONS: Station[] = [
   { id: 6, name: 'Atendimento',    iconKey: 'bell',      assignedId: 4    },
 ]
 
-// Pre-populate demo schedule for March 2026
 const INIT_SCHEDULE: Schedule = {
   3: { '2026-03-19': 'folga', '2026-03-20': 'folga', '2026-03-08': 'folga', '2026-03-09': 'folga' },
   6: buildRange('2026-03-10', '2026-03-28', 'vacation'),
@@ -176,23 +156,26 @@ const NAV_ITEMS = [
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
 export default function PatyHelp() {
-  const [tab, setTab] = useState<Tab>('hoje')
+  const [tab,       setTab]       = useState<Tab>('hoje')
   const [employees, setEmployees] = useState<Employee[]>(INIT_EMPLOYEES)
   const [stations,  setStations]  = useState<Station[]>(INIT_STATIONS)
   const [schedule,  setSchedule]  = useState<Schedule>(INIT_SCHEDULE)
+  const [roles,     setRoles]     = useState<string[]>(INIT_ROLES)
 
+  // modals
   const [assignModal,      setAssignModal]      = useState<number | null>(null)
   const [editStationModal, setEditStationModal] = useState<Station | null>(null)
   const [editEmpModal,     setEditEmpModal]     = useState<Employee | null>(null)
   const [vacationModal,    setVacationModal]    = useState<Employee | null>(null)
   const [addEmployeeModal, setAddEmployeeModal] = useState(false)
   const [addStationModal,  setAddStationModal]  = useState(false)
+  const [rolesModal,       setRolesModal]       = useState(false)
 
   const [newEmp, setNewEmp] = useState({ name: '', role: '', type: 'efetivo' as EmpType })
   const [newSt,  setNewSt]  = useState({ name: '', iconKey: 'flame' })
 
-  // ─ Derived (all based on schedule, not a stored status field) ─
-  const getStatus = (emp: Employee) => getStatusForDate(emp.id, schedule, TODAY_ISO)
+  // derived
+  const getStatus  = (e: Employee) => getStatusForDate(e.id, schedule, TODAY_ISO)
   const active     = employees.filter(e => getStatus(e) === 'active')
   const offToday   = employees.filter(e => getStatus(e) === 'dayoff')
   const onVacation = employees.filter(e => getStatus(e) === 'vacation')
@@ -200,47 +183,37 @@ export default function PatyHelp() {
   const unassigned = stations.filter(s => s.assignedId === null)
   const getEmployee = (id: number | null) => employees.find(e => e.id === id)
 
-  // ─ Schedule helpers ─
-  const setDayMark = (empId: number, dateISO: string, mark: DayMark | null) => {
+  // schedule helpers
+  const setDayMark = (empId: number, dateISO: string, mark: DayMark | null) =>
     setSchedule(prev => {
-      const empSch = { ...(prev[empId] ?? {}) }
-      if (mark === null) delete empSch[dateISO]
-      else empSch[dateISO] = mark
-      return { ...prev, [empId]: empSch }
+      const s = { ...(prev[empId] ?? {}) }
+      if (mark === null) delete s[dateISO]; else s[dateISO] = mark
+      return { ...prev, [empId]: s }
     })
-  }
 
-  const toggleEscalaCell = (empId: number, dateISO: string) => {
+  const toggleEscalaCell = (empId: number, dateISO: string) =>
     setSchedule(prev => {
-      const current = prev[empId]?.[dateISO]
-      if (current === 'vacation') return prev // don't touch vacation via cell click
-      const empSch = { ...(prev[empId] ?? {}) }
-      if (current === 'folga') delete empSch[dateISO]
-      else empSch[dateISO] = 'folga'
-      return { ...prev, [empId]: empSch }
+      const cur = prev[empId]?.[dateISO]
+      if (cur === 'vacation') return prev
+      const s = { ...(prev[empId] ?? {}) }
+      if (cur === 'folga') delete s[dateISO]; else s[dateISO] = 'folga'
+      return { ...prev, [empId]: s }
     })
-  }
 
   const setTodayFolga = (empId: number) => setDayMark(empId, TODAY_ISO, 'folga')
   const clearToday    = (empId: number) => setDayMark(empId, TODAY_ISO, null)
 
   const confirmVacation = (empId: number, start: string, end: string) => {
-    setSchedule(prev => {
-      const empSch = { ...(prev[empId] ?? {}), ...buildRange(start, end, 'vacation') }
-      return { ...prev, [empId]: empSch }
-    })
-    // Remove from station if assigned
+    setSchedule(prev => ({ ...prev, [empId]: { ...(prev[empId] ?? {}), ...buildRange(start, end, 'vacation') } }))
     setStations(st => st.map(s => s.assignedId === empId ? { ...s, assignedId: null } : s))
     setVacationModal(null)
   }
 
   const endVacation = (empId: number) => {
-    setSchedule(prev => {
-      const empSch = Object.fromEntries(
-        Object.entries(prev[empId] ?? {}).filter(([d, m]) => !(m === 'vacation' && d >= TODAY_ISO))
-      )
-      return { ...prev, [empId]: empSch }
-    })
+    setSchedule(prev => ({
+      ...prev,
+      [empId]: Object.fromEntries(Object.entries(prev[empId] ?? {}).filter(([d,m]) => !(m === 'vacation' && d >= TODAY_ISO)))
+    }))
     setVacationModal(null)
   }
 
@@ -251,22 +224,41 @@ export default function PatyHelp() {
   const unassignStation = (stationId: number) =>
     setStations(prev => prev.map(s => s.id === stationId ? { ...s, assignedId: null } : s))
 
-  const saveStation  = (u: Station)   => { setStations(p  => p.map(s => s.id === u.id ? u : s)); setEditStationModal(null) }
-  const saveEmployee = (u: Employee)  => { setEmployees(p => p.map(e => e.id === u.id ? u : e)); setEditEmpModal(null) }
+  const deleteStation = (stationId: number) =>
+    setStations(prev => prev.filter(s => s.id !== stationId))
+
+  const saveStation  = (u: Station)  => { setStations(p  => p.map(s => s.id === u.id ? u : s)); setEditStationModal(null) }
+  const saveEmployee = (u: Employee) => { setEmployees(p => p.map(e => e.id === u.id ? u : e)); setEditEmpModal(null) }
+
+  // escala drag-reorder (only reorders employee display order; marks follow the employee)
+  const reorderEmployees = (fromId: number, toId: number) => {
+    setEmployees(prev => {
+      const arr = [...prev]
+      const fi = arr.findIndex(e => e.id === fromId)
+      const ti = arr.findIndex(e => e.id === toId)
+      if (fi === -1 || ti === -1 || fi === ti) return prev
+      const [item] = arr.splice(fi, 1)
+      arr.splice(ti, 0, item)
+      return arr
+    })
+  }
 
   const addEmployee = () => {
     if (!newEmp.name.trim()) return
     const initials = newEmp.name.trim().split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
-    const id = Math.max(...employees.map(e => e.id)) + 1
-    setEmployees(p => [...p, { id, initials, name: newEmp.name.trim(), role: newEmp.role.trim() || 'Funcionário', type: newEmp.type }])
-    setNewEmp({ name: '', role: '', type: 'efetivo' }); setAddEmployeeModal(false)
+    const id = Math.max(0, ...employees.map(e => e.id)) + 1
+    const role = newEmp.role || roles[0] || 'Funcionário'
+    setEmployees(p => [...p, { id, initials, name: newEmp.name.trim(), role, type: newEmp.type }])
+    setNewEmp({ name: '', role: '', type: 'efetivo' })
+    setAddEmployeeModal(false)
   }
 
   const addStation = () => {
     if (!newSt.name.trim()) return
-    const id = Math.max(...stations.map(s => s.id)) + 1
+    const id = Math.max(0, ...stations.map(s => s.id)) + 1
     setStations(p => [...p, { id, assignedId: null, name: newSt.name.trim(), iconKey: newSt.iconKey }])
-    setNewSt({ name: '', iconKey: 'flame' }); setAddStationModal(false)
+    setNewSt({ name: '', iconKey: 'flame' })
+    setAddStationModal(false)
   }
 
   const pieData  = [
@@ -275,24 +267,18 @@ export default function PatyHelp() {
   ]
   const weekData = [
     { day: 'Seg', n: 5 }, { day: 'Ter', n: 6 }, { day: 'Qua', n: 5 },
-    { day: 'Qui', n: active.length },
-    { day: 'Sex', n: 6 }, { day: 'Sáb', n: 4 }, { day: 'Dom', n: 3 },
+    { day: 'Qui', n: active.length }, { day: 'Sex', n: 6 }, { day: 'Sáb', n: 4 }, { day: 'Dom', n: 3 },
   ]
-
   const modalStation = stations.find(s => s.id === assignModal)
 
   return (
     <div className="ph-app">
-
-      {/* ── Sidebar ──────────────────────────────────────── */}
+      {/* ── Sidebar ── */}
       <nav className="ph-sidebar">
-        <div className="ph-sidebar-logo">
-          <ChefHat size={22} color="#FFF5EE" strokeWidth={1.8} />
-        </div>
+        <div className="ph-sidebar-logo"><ChefHat size={22} color="#FFF5EE" strokeWidth={1.8} /></div>
         <div className="ph-sidebar-nav">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
-            <button key={id} className={`ph-nav-btn ${tab === id ? 'active' : ''}`}
-              onClick={() => setTab(id)} title={label}>
+            <button key={id} className={`ph-nav-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)} title={label}>
               <Icon size={20} strokeWidth={tab === id ? 2.2 : 1.8} />
               <span className="ph-nav-label">{label}</span>
             </button>
@@ -303,7 +289,7 @@ export default function PatyHelp() {
         </div>
       </nav>
 
-      {/* ── Page ─────────────────────────────────────────── */}
+      {/* ── Content ── */}
       <div className="ph-content">
         <header className="ph-header">
           <div>
@@ -319,31 +305,30 @@ export default function PatyHelp() {
         <main className="ph-main">
           {tab === 'hoje' && (
             <HojeTab employees={employees} active={active} offToday={offToday} onVacation={onVacation}
-              assigned={assigned} unassigned={unassigned} stations={stations}
-              getEmployee={getEmployee} schedule={schedule}
-              pieData={pieData} weekData={weekData}
+              assigned={assigned} unassigned={unassigned} stations={stations} getEmployee={getEmployee}
+              schedule={schedule} pieData={pieData} weekData={weekData}
               goToPracas={() => setTab('pracas')} goToEquipe={() => setTab('equipe')} goToEscala={() => setTab('escala')} />
           )}
           {tab === 'escala' && (
             <EscalaTab employees={employees} schedule={schedule}
-              onToggleCell={toggleEscalaCell}
-              onOpenVacation={e => setVacationModal(e)} />
+              onToggleCell={toggleEscalaCell} onOpenVacation={e => setVacationModal(e)}
+              onReorder={reorderEmployees} />
           )}
           {tab === 'pracas' && (
             <PracasTab stations={stations} getEmployee={getEmployee}
               onAssign={id => setAssignModal(id)} onEdit={s => setEditStationModal(s)}
-              onAdd={() => setAddStationModal(true)} />
+              onDelete={deleteStation} onAdd={() => setAddStationModal(true)} />
           )}
           {tab === 'equipe' && (
             <EquipeTab employees={employees} schedule={schedule}
               onSetFolga={setTodayFolga} onClearToday={clearToday}
               onEdit={e => setEditEmpModal(e)} onVacation={e => setVacationModal(e)}
-              onAdd={() => setAddEmployeeModal(true)} />
+              onAdd={() => setAddEmployeeModal(true)} onManageRoles={() => setRolesModal(true)} />
           )}
         </main>
       </div>
 
-      {/* ── Mobile nav ───────────────────────────────────── */}
+      {/* ── Mobile nav ── */}
       <div className="ph-mobile-nav">
         <div className="ph-mob-inner">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
@@ -355,7 +340,7 @@ export default function PatyHelp() {
         </div>
       </div>
 
-      {/* ── Modals ───────────────────────────────────────── */}
+      {/* ── Modals ── */}
       {assignModal && modalStation && (
         <BottomSheet onClose={() => setAssignModal(null)} title={`Responsável · ${modalStation.name}`}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -376,8 +361,7 @@ export default function PatyHelp() {
             {modalStation.assignedId && (
               <button onClick={() => { unassignStation(assignModal); setAssignModal(null) }}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, border: `1.5px solid ${C.danger}35`, background: C.dangerLight, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', width: '100%', marginTop: 4 }}>
-                <X size={15} color={C.danger} />
-                <span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover responsável</span>
+                <X size={15} color={C.danger} /><span style={{ color: C.danger, fontWeight: 600, fontSize: 14 }}>Remover responsável</span>
               </button>
             )}
           </div>
@@ -392,14 +376,19 @@ export default function PatyHelp() {
 
       {editEmpModal && (
         <BottomSheet onClose={() => setEditEmpModal(null)} title="Editar Funcionário">
-          <EditEmployeeForm emp={editEmpModal} onSave={saveEmployee} />
+          <EditEmployeeForm emp={editEmpModal} roles={roles} onSave={saveEmployee} />
         </BottomSheet>
       )}
 
       {vacationModal && (
         <BottomSheet onClose={() => setVacationModal(null)} title={`Férias · ${vacationModal.name}`}>
-          <VacationForm emp={vacationModal} schedule={schedule}
-            onConfirm={confirmVacation} onEnd={endVacation} />
+          <VacationForm emp={vacationModal} schedule={schedule} onConfirm={confirmVacation} onEnd={endVacation} />
+        </BottomSheet>
+      )}
+
+      {rolesModal && (
+        <BottomSheet onClose={() => setRolesModal(false)} title="Gerenciar Cargos">
+          <RolesManager roles={roles} onChange={setRoles} />
         </BottomSheet>
       )}
 
@@ -409,8 +398,10 @@ export default function PatyHelp() {
           <input placeholder="Ex: Maria Silva" value={newEmp.name}
             onChange={e => setNewEmp(p => ({ ...p, name: e.target.value }))} style={inputSt} />
           <FLabel style={{ marginTop: 12 }}>Cargo</FLabel>
-          <input placeholder="Ex: Cozinheiro" value={newEmp.role}
-            onChange={e => setNewEmp(p => ({ ...p, role: e.target.value }))} style={inputSt} />
+          <select value={newEmp.role || roles[0] || ''}
+            onChange={e => setNewEmp(p => ({ ...p, role: e.target.value }))} style={selectSt}>
+            {roles.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
           <FLabel style={{ marginTop: 12 }}>Tipo de contrato</FLabel>
           <TypeSelector value={newEmp.type} onChange={t => setNewEmp(p => ({ ...p, type: t }))} />
           <button onClick={addEmployee} style={{ ...primaryBtnSt, marginTop: 20 }}>
@@ -440,8 +431,7 @@ export default function PatyHelp() {
 function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned, stations, getEmployee, schedule, pieData, weekData, goToPracas, goToEquipe, goToEscala }: {
   employees: Employee[]; active: Employee[]; offToday: Employee[]; onVacation: Employee[]
   assigned: Station[]; unassigned: Station[]; stations: Station[]
-  getEmployee: (id: number | null) => Employee | undefined
-  schedule: Schedule
+  getEmployee: (id: number | null) => Employee | undefined; schedule: Schedule
   pieData: { name: string; value: number; color: string }[]
   weekData: { day: string; n: number }[]
   goToPracas: () => void; goToEquipe: () => void; goToEscala: () => void
@@ -449,11 +439,9 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
   const efetivos    = employees.filter(e => e.type === 'efetivo').length
   const temporarios = employees.filter(e => e.type === 'temporario').length
   const absent      = [...offToday, ...onVacation]
-
   return (
     <div>
       <span className="ph-section-label">Resumo do dia</span>
-
       <div className="ph-metrics">
         <MetricCard value={active.length}    label="Trabalhando"     Icon={UserCheck}    accent={C.success} light={C.successLight} />
         <MetricCard value={offToday.length}  label="De folga"        Icon={Umbrella}     accent={C.warning} light={C.warningLight} />
@@ -462,7 +450,6 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
       </div>
 
       <div className="ph-row-211">
-        {/* Praças list */}
         <div className="ph-card">
           <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Praças de hoje</span>
@@ -487,7 +474,6 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           })}
         </div>
 
-        {/* Bar chart */}
         <div className="ph-card ph-card-p">
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Equipe esta semana</div>
           <div style={{ fontSize: 11, color: C.textLight, marginBottom: 14, marginTop: 2 }}>Funcionários por dia</div>
@@ -501,7 +487,6 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           </ResponsiveContainer>
         </div>
 
-        {/* Composition */}
         <div className="ph-card ph-card-p" style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 16 }}>Composição da equipe</div>
           {[
@@ -515,14 +500,11 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
               <span style={{ fontSize: 15, fontWeight: 700, color }}>{value}</span>
             </div>
           ))}
-          <button onClick={goToEquipe} style={{ ...outlineBtnSt, marginTop: 'auto', paddingTop: 14 }}>
-            <Users size={13} /> Ver equipe
-          </button>
+          <button onClick={goToEquipe} style={{ ...outlineBtnSt, marginTop: 'auto', paddingTop: 14 }}><Users size={13} /> Ver equipe</button>
         </div>
       </div>
 
       <div className="ph-row-211">
-        {/* Team preview */}
         <div className="ph-card">
           <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Equipe hoje</span>
@@ -543,7 +525,6 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           ))}
         </div>
 
-        {/* Absences */}
         <div className="ph-card ph-card-p">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Ausências</div>
@@ -569,12 +550,9 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           })}
         </div>
 
-        {/* Alert card */}
         <div className="ph-card ph-card-p" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
           <div style={{ width: 52, height: 52, borderRadius: 16, background: unassigned.length > 0 ? C.dangerLight : C.successLight, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-            {unassigned.length > 0
-              ? <AlertTriangle size={26} color={C.danger}  strokeWidth={1.8} />
-              : <Check         size={26} color={C.success} strokeWidth={2}   />}
+            {unassigned.length > 0 ? <AlertTriangle size={26} color={C.danger} strokeWidth={1.8} /> : <Check size={26} color={C.success} strokeWidth={2} />}
           </div>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 8 }}>
             {unassigned.length > 0 ? `${unassigned.length} praça${unassigned.length > 1 ? 's' : ''} sem cobertura` : 'Tudo coberto!'}
@@ -582,20 +560,16 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
           <div style={{ fontSize: 12, color: C.textLight, lineHeight: 1.6, marginBottom: 16 }}>
             {unassigned.length > 0 ? 'Atribua funcionários às praças abertas.' : 'Todas as praças têm responsável hoje. Ótimo!'}
           </div>
-          {unassigned.length > 0 && (
-            <button onClick={goToPracas} style={{ ...primaryBtnSt, fontSize: 13, padding: '10px 16px' }}>Resolver agora</button>
-          )}
+          {unassigned.length > 0 && <button onClick={goToPracas} style={{ ...primaryBtnSt, fontSize: 13, padding: '10px 16px' }}>Resolver agora</button>}
         </div>
       </div>
 
-      {/* Pie chart */}
       <div className="ph-card ph-card-p">
         <div style={{ fontWeight: 700, fontSize: 14, color: C.text, marginBottom: 4 }}>Cobertura de praças</div>
         <ResponsiveContainer width="100%" height={180}>
           <PieChart>
             <Pie data={pieData} cx="50%" cy="50%" outerRadius={68} innerRadius={28} dataKey="value"
-              label={({ name, value }: { name: string; value: number }) => value > 0 ? `${name}: ${value}` : ''}
-              labelLine={{ stroke: C.textLight }}>
+              label={({ name, value }: { name: string; value: number }) => value > 0 ? `${name}: ${value}` : ''} labelLine={{ stroke: C.textLight }}>
               {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
             </Pie>
             <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontFamily: 'DM Sans', fontSize: 12 }} />
@@ -607,79 +581,71 @@ function HojeTab({ employees, active, offToday, onVacation, assigned, unassigned
   )
 }
 
-// ─── EscalaTab ────────────────────────────────────────────────────────────────
+// ─── EscalaTab — with drag-to-reorder rows ───────────────────────────────────
 
-function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation }: {
+function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation, onReorder }: {
   employees: Employee[]; schedule: Schedule
   onToggleCell: (empId: number, dateISO: string) => void
   onOpenVacation: (emp: Employee) => void
+  onReorder: (fromId: number, toId: number) => void
 }) {
   const now = new Date()
   const [viewYear,  setViewYear]  = useState(now.getFullYear())
   const [viewMonth, setViewMonth] = useState(now.getMonth())
+  const dragIdRef = useRef<number | null>(null)
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
 
-  const getDateISO  = (d: number) => {
-    const month = String(viewMonth + 1).padStart(2, '0')
-    const day   = String(d).padStart(2, '0')
-    return `${viewYear}-${month}-${day}`
-  }
-  const getDow      = (d: number) => new Date(viewYear, viewMonth, d).getDay()
-  const isWeekend   = (d: number) => { const dow = getDow(d); return dow === 0 || dow === 6 }
-  const isToday     = (d: number) => getDateISO(d) === TODAY_ISO
+  const getDateISO = (d: number) => `${viewYear}-${String(viewMonth + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+  const getDow     = (d: number) => new Date(viewYear, viewMonth, d).getDay()
+  const isWeekend  = (d: number) => { const w = getDow(d); return w === 0 || w === 6 }
+  const isToday    = (d: number) => getDateISO(d) === TODAY_ISO
 
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
-    else setViewMonth(m => m - 1)
-  }
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
-    else setViewMonth(m => m + 1)
-  }
-  const goToday = () => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()) }
+  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y-1) } else setViewMonth(m => m-1) }
+  const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y+1) } else setViewMonth(m => m+1) }
+  const goToday   = () => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()) }
 
-  // group employees by role
   const roles = [...new Set(employees.map(e => e.role))]
-
-  const getDayMark = (empId: number, d: number): DayMark | null =>
-    (schedule[empId]?.[getDateISO(d)] as DayMark | undefined) ?? null
+  const getDayMark = (empId: number, d: number): DayMark | null => (schedule[empId]?.[getDateISO(d)] as DayMark | undefined) ?? null
 
   return (
     <div>
-      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
+        <div>
+          <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button onClick={goToday} style={{ ...outlineBtnSt, width: 'auto', padding: '6px 12px', fontSize: 12 }}>Hoje</button>
           <button onClick={prevMonth} style={iconEditBtnSt}><ChevronLeft size={15} /></button>
-          <span style={{ fontWeight: 700, fontSize: 14, color: C.text, minWidth: 130, textAlign: 'center' }}>
-            {MONTH_NAMES[viewMonth]} {viewYear}
-          </span>
+          <span style={{ fontWeight: 700, fontSize: 14, color: C.text, minWidth: 130, textAlign: 'center' }}>{MONTH_NAMES[viewMonth]} {viewYear}</span>
           <button onClick={nextMonth} style={iconEditBtnSt}><ChevronRight size={15} /></button>
         </div>
       </div>
 
       {/* Legend */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
-        {[
-          { bg: C.dangerLight, border: '#F0B0B0', color: C.danger, text: 'F', label: 'Folga — clique para marcar' },
-          { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias — via botão Férias' },
-        ].map(l => (
-          <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.textMid }}>
-            <div style={{ minWidth: l.text === 'FÉR' ? 28 : 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
-            {l.label}
-          </div>
-        ))}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {[
+            { bg: C.dangerLight,   border: '#F0B0B0', color: C.danger, text: 'F',   label: 'Folga — clique para marcar/desmarcar' },
+            { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias — via ícone 📅 na linha' },
+          ].map(l => (
+            <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
+              <div style={{ minWidth: l.text === 'FÉR' ? 28 : 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
+              {l.label}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
+          <GripVertical size={14} color={C.textLight} />
+          Arraste o nome para reordenar
+        </div>
       </div>
 
-      {/* Scrollable schedule table */}
       <div className="ph-escala-wrap">
         <table className="ph-escala-table">
           <thead>
             <tr>
-              {/* Name col header */}
               <th className="ph-escala-name-col" style={{ background: C.nav, color: '#FFF5EE', fontSize: 10, fontWeight: 700, padding: '9px 14px', textAlign: 'left', borderRight: `2px solid rgba(255,255,255,0.15)`, letterSpacing: '0.5px' }}>
                 FUNCIONÁRIO
               </th>
@@ -697,18 +663,22 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation }: {
           <tbody>
             {roles.map(role => (
               <>
-                {/* Group row */}
                 <tr key={`g-${role}`}>
                   <td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
                     {role}
                   </td>
                 </tr>
-                {/* Employee rows */}
                 {employees.filter(e => e.role === role).map(emp => (
                   <tr key={emp.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                    {/* Name cell — sticky */}
-                    <td className="ph-escala-name-col-td">
+                    {/* Draggable name cell */}
+                    <td className="ph-escala-name-col-td"
+                      draggable
+                      onDragStart={() => { dragIdRef.current = emp.id }}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={() => { if (dragIdRef.current !== null && dragIdRef.current !== emp.id) onReorder(dragIdRef.current, emp.id); dragIdRef.current = null }}
+                      style={{ cursor: 'grab' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px' }}>
+                        <GripVertical size={13} color={C.border} strokeWidth={2} style={{ flexShrink: 0 }} />
                         <Avatar emp={emp} size={26} />
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 600, fontSize: 12, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -724,17 +694,13 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation }: {
                     </td>
                     {/* Day cells */}
                     {days.map(d => {
-                      const mark    = getDayMark(emp.id, d)
-                      const weekend = isWeekend(d)
-                      const today   = isToday(d)
-                      const isVac   = mark === 'vacation'
-                      const isF     = mark === 'folga'
-
+                      const mark = getDayMark(emp.id, d)
+                      const weekend = isWeekend(d); const today = isToday(d)
+                      const isVac = mark === 'vacation'; const isF = mark === 'folga'
                       let bg = weekend ? '#FAF6F2' : '#FFFFFF'
-                      if (today && !mark)  bg = '#FFF8F4'
-                      if (isF)    bg = C.dangerLight
-                      if (isVac)  bg = C.vacationLight
-
+                      if (today && !mark) bg = '#FFF8F4'
+                      if (isF)  bg = C.dangerLight
+                      if (isVac) bg = C.vacationLight
                       return (
                         <td key={d}
                           className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`}
@@ -755,12 +721,14 @@ function EscalaTab({ employees, schedule, onToggleCell, onOpenVacation }: {
   )
 }
 
-// ─── PracasTab ────────────────────────────────────────────────────────────────
+// ─── PracasTab — with delete button ──────────────────────────────────────────
 
-function PracasTab({ stations, getEmployee, onAssign, onEdit, onAdd }: {
+function PracasTab({ stations, getEmployee, onAssign, onEdit, onDelete, onAdd }: {
   stations: Station[]; getEmployee: (id: number | null) => Employee | undefined
-  onAssign: (id: number) => void; onEdit: (s: Station) => void; onAdd: () => void
+  onAssign: (id: number) => void; onEdit: (s: Station) => void
+  onDelete: (id: number) => void; onAdd: () => void
 }) {
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -781,10 +749,28 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onAdd }: {
                     <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>{s.name}</div>
                     <StatusBadge status={covered ? 'covered' : 'empty'} />
                   </div>
-                  <button onClick={() => onEdit(s)} style={iconEditBtnSt} title="Editar praça">
-                    <Pencil size={13} strokeWidth={2} />
-                  </button>
+                  {/* Edit + Delete buttons */}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => onEdit(s)} style={iconEditBtnSt} title="Editar praça">
+                      <Pencil size={13} strokeWidth={2} />
+                    </button>
+                    <button onClick={() => setConfirmDelete(s.id)} style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '40' }} title="Apagar praça">
+                      <Trash2 size={13} strokeWidth={2} color={C.danger} />
+                    </button>
+                  </div>
                 </div>
+
+                {/* Delete confirm inline */}
+                {confirmDelete === s.id && (
+                  <div style={{ background: C.dangerLight, border: `1px solid ${C.danger}35`, borderRadius: 11, padding: '10px 12px', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 13, color: C.danger, fontWeight: 600 }}>Apagar "{s.name}"?</span>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button onClick={() => setConfirmDelete(null)} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, color: C.textMid, fontFamily: 'DM Sans,sans-serif' }}>Não</button>
+                      <button onClick={() => { onDelete(s.id); setConfirmDelete(null) }} style={{ background: C.danger, border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, color: '#fff', fontWeight: 700, fontFamily: 'DM Sans,sans-serif' }}>Apagar</button>
+                    </div>
+                  </div>
+                )}
+
                 {emp ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 11, background: getEmpColor(emp.id).bg, border: `1px solid ${getEmpColor(emp.id).border}`, marginBottom: 12 }}>
                     <Avatar emp={emp} size={38} />
@@ -816,10 +802,11 @@ function PracasTab({ stations, getEmployee, onAssign, onEdit, onAdd }: {
 
 // ─── EquipeTab ────────────────────────────────────────────────────────────────
 
-function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVacation, onAdd }: {
+function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVacation, onAdd, onManageRoles }: {
   employees: Employee[]; schedule: Schedule
   onSetFolga: (id: number) => void; onClearToday: (id: number) => void
-  onEdit: (e: Employee) => void; onVacation: (e: Employee) => void; onAdd: () => void
+  onEdit: (e: Employee) => void; onVacation: (e: Employee) => void
+  onAdd: () => void; onManageRoles: () => void
 }) {
   const active   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'active')
   const dayoff   = employees.filter(e => getStatusForDate(e.id, schedule, TODAY_ISO) === 'dayoff')
@@ -829,7 +816,13 @@ function EquipeTab({ employees, schedule, onSetFolga, onClearToday, onEdit, onVa
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
         <span className="ph-section-label" style={{ marginBottom: 0 }}>Equipe</span>
-        <button onClick={onAdd} style={addBtnSt}><Plus size={14} strokeWidth={2.5} /> Funcionário</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* Manage roles button */}
+          <button onClick={onManageRoles} style={{ ...addBtnSt, background: C.card, color: C.textMid, border: `1px solid ${C.border}` }}>
+            <Briefcase size={14} strokeWidth={2} /> Cargos
+          </button>
+          <button onClick={onAdd} style={addBtnSt}><Plus size={14} strokeWidth={2.5} /> Funcionário</button>
+        </div>
       </div>
       {active.length > 0 && (
         <>
@@ -866,10 +859,9 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
   onSetFolga: (id: number) => void; onClearToday: (id: number) => void
   onEdit: (e: Employee) => void; onVacation: (e: Employee) => void
 }) {
-  const status  = getStatusForDate(emp.id, schedule, TODAY_ISO)
+  const status   = getStatusForDate(emp.id, schedule, TODAY_ISO)
   const vacRange = getVacationRange(emp.id, schedule)
-  const accent  = status === 'active' ? C.success : status === 'vacation' ? C.info : C.warning
-
+  const accent   = status === 'active' ? C.success : status === 'vacation' ? C.info : C.warning
   return (
     <div className="ph-card" style={{ borderTop: `3px solid ${accent}` }}>
       <div className="ph-card-p">
@@ -884,16 +876,12 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
               </div>
             )}
           </div>
-          <button onClick={() => onEdit(emp)} style={iconEditBtnSt} title="Editar funcionário">
-            <Pencil size={13} strokeWidth={2} />
-          </button>
+          <button onClick={() => onEdit(emp)} style={iconEditBtnSt} title="Editar funcionário"><Pencil size={13} strokeWidth={2} /></button>
         </div>
-
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <TypeBadge type={emp.type} />
           <StatusBadge status={status} />
         </div>
-
         {status === 'active' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <ActionBtn onClick={() => onSetFolga(emp.id)} Icon={Umbrella} label="Folga"  bg={C.warningLight} color={C.warning} />
@@ -902,17 +890,80 @@ function EmployeeCard({ emp, schedule, onSetFolga, onClearToday, onEdit, onVacat
         ) : (
           <ActionBtn onClick={() => onClearToday(emp.id)} Icon={UserCheck}
             label={status === 'vacation' ? 'Encerrar férias' : 'Marcar como ativo'}
-            bg={C.successLight} color={C.success} full
-          />
+            bg={C.successLight} color={C.success} full />
         )}
       </div>
     </div>
   )
 }
 
-// ─── Edit Employee Form ───────────────────────────────────────────────────────
+// ─── RolesManager ─────────────────────────────────────────────────────────────
 
-function EditEmployeeForm({ emp, onSave }: { emp: Employee; onSave: (e: Employee) => void }) {
+function RolesManager({ roles, onChange }: { roles: string[]; onChange: (r: string[]) => void }) {
+  const [newRole, setNewRole] = useState('')
+
+  const addRole = () => {
+    const trimmed = newRole.trim()
+    if (!trimmed || roles.includes(trimmed)) return
+    onChange([...roles, trimmed])
+    setNewRole('')
+  }
+
+  const deleteRole = (role: string) => onChange(roles.filter(r => r !== role))
+
+  const moveRole = (idx: number, dir: -1 | 1) => {
+    const arr = [...roles]
+    const target = idx + dir
+    if (target < 0 || target >= arr.length) return
+    ;[arr[idx], arr[target]] = [arr[target], arr[idx]]
+    onChange(arr)
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.textMid, marginBottom: 14, lineHeight: 1.5 }}>
+        Cargos disponíveis na seleção de funcionários. Use as setas para ordenar como aparecem na Escala.
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+        {roles.map((role, idx) => (
+          <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` }}>
+            <GripVertical size={15} color={C.border} />
+            <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.text }}>{role}</span>
+            {/* Up / Down */}
+            <button onClick={() => moveRole(idx, -1)} disabled={idx === 0}
+              style={{ ...iconEditBtnSt, opacity: idx === 0 ? 0.35 : 1 }}>
+              <ChevronUp size={13} />
+            </button>
+            <button onClick={() => moveRole(idx, 1)} disabled={idx === roles.length - 1}
+              style={{ ...iconEditBtnSt, opacity: idx === roles.length - 1 ? 0.35 : 1 }}>
+              <ChevronDown size={13} />
+            </button>
+            <button onClick={() => deleteRole(role)}
+              style={{ ...iconEditBtnSt, background: C.dangerLight, borderColor: C.danger + '35' }}>
+              <Trash2 size={13} strokeWidth={2} color={C.danger} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <FLabel>Adicionar novo cargo</FLabel>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input placeholder="Ex: Garçom, Sommelier…" value={newRole}
+          onChange={e => setNewRole(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addRole()}
+          style={{ ...inputSt, flex: 1 }} />
+        <button onClick={addRole} style={{ ...primaryBtnSt, width: 'auto', padding: '12px 16px' }}>
+          <Plus size={16} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Edit Employee Form (role dropdown) ───────────────────────────────────────
+
+function EditEmployeeForm({ emp, roles, onSave }: { emp: Employee; roles: string[]; onSave: (e: Employee) => void }) {
   const [name, setName] = useState(emp.name)
   const [role, setRole] = useState(emp.role)
   const [type, setType] = useState<EmpType>(emp.type)
@@ -922,17 +973,20 @@ function EditEmployeeForm({ emp, onSave }: { emp: Employee; onSave: (e: Employee
         <Avatar emp={{ ...emp, name: name || emp.name }} size={44} />
         <div>
           <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{name || emp.name}</div>
-          <div style={{ fontSize: 12, color: C.textMid, marginTop: 1 }}>{role || emp.role}</div>
+          <div style={{ fontSize: 12, color: C.textMid, marginTop: 1 }}>{role}</div>
         </div>
       </div>
       <FLabel>Nome completo</FLabel>
       <input value={name} onChange={e => setName(e.target.value)} style={inputSt} />
       <FLabel style={{ marginTop: 12 }}>Cargo</FLabel>
-      <input value={role} onChange={e => setRole(e.target.value)} style={inputSt} />
+      <select value={role} onChange={e => setRole(e.target.value)} style={selectSt}>
+        {roles.map(r => <option key={r} value={r}>{r}</option>)}
+        {/* If current role not in list, keep it as an option */}
+        {!roles.includes(emp.role) && <option value={emp.role}>{emp.role}</option>}
+      </select>
       <FLabel style={{ marginTop: 12 }}>Tipo de contrato</FLabel>
       <TypeSelector value={type} onChange={setType} />
-      <button onClick={() => onSave({ ...emp, name: name.trim() || emp.name, role: role.trim() || emp.role, type })}
-        style={{ ...primaryBtnSt, marginTop: 20 }}>
+      <button onClick={() => onSave({ ...emp, name: name.trim() || emp.name, role, type })} style={{ ...primaryBtnSt, marginTop: 20 }}>
         <Check size={16} /> Salvar alterações
       </button>
     </div>
@@ -949,9 +1003,8 @@ function VacationForm({ emp, schedule, onConfirm, onEnd }: {
   const existing = getVacationRange(emp.id, schedule)
   const [start, setStart] = useState(existing?.start ?? '')
   const [end,   setEnd]   = useState(existing?.end   ?? '')
-  const canConfirm = start && end && end >= start
-  const isOnVacation = getStatusForDate(emp.id, schedule, TODAY_ISO) === 'vacation'
-
+  const canConfirm    = start && end && end >= start
+  const isOnVacation  = getStatusForDate(emp.id, schedule, TODAY_ISO) === 'vacation'
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
@@ -967,12 +1020,9 @@ function VacationForm({ emp, schedule, onConfirm, onEnd }: {
       <FLabel>Início das férias</FLabel>
       <input type="date" value={start} onChange={e => setStart(e.target.value)} style={inputSt} />
       <FLabel style={{ marginTop: 12 }}>Fim das férias</FLabel>
-      <input type="date" value={end}   onChange={e => setEnd(e.target.value)}   style={inputSt} />
-      <div style={{ fontSize: 11, color: C.textLight, marginTop: 8 }}>
-        As datas aparecerão automaticamente na aba Escala.
-      </div>
-      <button onClick={() => canConfirm && onConfirm(emp.id, start, end)}
-        style={{ ...primaryBtnSt, marginTop: 18, opacity: canConfirm ? 1 : 0.5 }}>
+      <input type="date" value={end} onChange={e => setEnd(e.target.value)} style={inputSt} />
+      <div style={{ fontSize: 11, color: C.textLight, marginTop: 8 }}>As datas aparecerão automaticamente na aba Escala.</div>
+      <button onClick={() => canConfirm && onConfirm(emp.id, start, end)} style={{ ...primaryBtnSt, marginTop: 18, opacity: canConfirm ? 1 : 0.5 }}>
         <Calendar size={16} /> Confirmar férias
       </button>
       {isOnVacation && (
@@ -995,28 +1045,25 @@ function EditStationForm({ station, onSave }: { station: Station; onSave: (s: St
       <input value={name} onChange={e => setName(e.target.value)} style={inputSt} />
       <FLabel style={{ marginTop: 12 }}>Ícone</FLabel>
       <IconPicker selected={iconKey} onSelect={setIconKey} />
-      <button onClick={() => onSave({ ...station, name: name.trim() || station.name, iconKey })}
-        style={{ ...primaryBtnSt, marginTop: 20 }}>
+      <button onClick={() => onSave({ ...station, name: name.trim() || station.name, iconKey })} style={{ ...primaryBtnSt, marginTop: 20 }}>
         <Check size={16} /> Salvar praça
       </button>
     </div>
   )
 }
 
-// ─── Shared components ────────────────────────────────────────────────────────
+// ─── Shared UI ────────────────────────────────────────────────────────────────
 
 function Avatar({ emp, size }: { emp: Employee; size: number }) {
-  const color = getEmpColor(emp.id)
+  const c = getEmpColor(emp.id)
   return (
-    <div style={{ width: size, height: size, borderRadius: '50%', flexShrink: 0, background: color.bg, color: color.text, border: `1.5px solid ${color.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size * 0.33, fontFamily: 'DM Sans,sans-serif' }}>
+    <div style={{ width: size, height: size, borderRadius: '50%', flexShrink: 0, background: c.bg, color: c.text, border: `1.5px solid ${c.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size * 0.33, fontFamily: 'DM Sans,sans-serif' }}>
       {emp.initials}
     </div>
   )
 }
 
-function MetricCard({ value, label, Icon, accent, light, dark = false }: {
-  value: number; label: string; Icon: IconComp; accent: string; light: string; dark?: boolean
-}) {
+function MetricCard({ value, label, Icon, accent, light, dark = false }: { value: number; label: string; Icon: IconComp; accent: string; light: string; dark?: boolean }) {
   return (
     <div className="ph-card" style={{ background: dark ? C.nav : C.card, borderColor: dark ? 'transparent' : C.border }}>
       <div className="ph-card-p">
@@ -1049,20 +1096,14 @@ function StatusBadge({ status, small = false }: { status: Status | 'covered' | '
     empty:    { label: 'Descoberta', bg: C.dangerLight,  color: C.danger  },
   }
   const s = map[status]
-  return (
-    <span style={{ fontSize: small ? 10 : 11, fontWeight: 700, padding: small ? '2px 6px' : '3px 8px', borderRadius: 6, background: s.bg, color: s.color, whiteSpace: 'nowrap', letterSpacing: '0.2px' }}>
-      {s.label}
-    </span>
-  )
+  return <span style={{ fontSize: small ? 10 : 11, fontWeight: 700, padding: small ? '2px 6px' : '3px 8px', borderRadius: 6, background: s.bg, color: s.color, whiteSpace: 'nowrap', letterSpacing: '0.2px' }}>{s.label}</span>
 }
 
 function TypeSelector({ value, onChange }: { value: EmpType; onChange: (t: EmpType) => void }) {
   return (
     <div style={{ display: 'flex', gap: 10 }}>
       {(['efetivo', 'temporario'] as EmpType[]).map(t => {
-        const active = value === t
-        const color  = t === 'efetivo' ? C.info : C.teal
-        const light  = t === 'efetivo' ? C.infoLight : C.tealLight
+        const active = value === t; const color = t === 'efetivo' ? C.info : C.teal; const light = t === 'efetivo' ? C.infoLight : C.tealLight
         return (
           <button key={t} onClick={() => onChange(t)} style={{ flex: 1, padding: '11px', borderRadius: 11, border: `1.5px solid ${active ? color : C.border}`, background: active ? light : C.card, color: active ? color : C.textMid, fontWeight: 600, fontSize: 14, cursor: 'pointer', fontFamily: 'DM Sans,sans-serif', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'all 0.12s' }}>
             {t === 'efetivo' ? <BadgeCheck size={15} strokeWidth={2} /> : <Timer size={15} strokeWidth={2} />}
@@ -1128,13 +1169,20 @@ function IconPicker({ selected, onSelect }: { selected: string; onSelect: (k: st
   )
 }
 
-// ─── Style constants ──────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const inputSt: CSSProperties = {
   width: '100%', boxSizing: 'border-box', padding: '12px 14px',
   borderRadius: 12, border: `1.5px solid ${C.border}`,
-  fontFamily: 'DM Sans,sans-serif', fontSize: 15,
-  background: '#FAFAFA', color: C.text, outline: 'none',
+  fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text, outline: 'none',
+}
+const selectSt: CSSProperties = {
+  width: '100%', boxSizing: 'border-box', padding: '12px 14px',
+  borderRadius: 12, border: `1.5px solid ${C.border}`,
+  fontFamily: 'DM Sans,sans-serif', fontSize: 15, background: '#FAFAFA', color: C.text,
+  outline: 'none', cursor: 'pointer', appearance: 'none',
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239A7866' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+  backgroundRepeat: 'no-repeat', backgroundPosition: 'right 14px center',
 }
 const primaryBtnSt: CSSProperties = {
   width: '100%', padding: '13px', background: C.accent, color: '#FFF5EE',
