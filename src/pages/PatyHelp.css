@@ -8,6 +8,7 @@
   min-height: 100vh;
   font-family: 'DM Sans', -apple-system, sans-serif;
   color: #18080A;
+  overflow-x: clip;
 }
 
 /* ─── Sidebar ─────────────────────────────────── */
@@ -43,7 +44,7 @@
 .ph-nav-label { font-size: 9px; font-weight: 600; letter-spacing: 0.3px; line-height: 1; }
 
 /* ─── Content ─────────────────────────────────── */
-.ph-content { margin-left: 76px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+.ph-content { margin-left: 76px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; min-width: 0; overflow-x: hidden; }
 
 /* ─── Header ─────────────────────────────────── */
 .ph-header {
@@ -59,7 +60,7 @@
 .ph-icon-btn:hover { background: #E5DDD6; }
 
 /* ─── Main ───────────────────────────────────── */
-.ph-main { padding: 22px 28px 36px; flex: 1; }
+.ph-main { padding: 22px 28px 36px; flex: 1; min-width: 0; }
 .ph-section-label { font-size: 11px; font-weight: 700; color: #9A7866; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; display: block; }
 
 /* ─── Dashboard grids ────────────────────────── */
@@ -74,7 +75,7 @@
 .ph-card-p-sm { padding: 14px 16px; }
 
 /* ─── Escala table ───────────────────────────── */
-.ph-escala-wrap { overflow-x: auto; border-radius: 16px; border: 1px solid #E8E0D8; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.ph-escala-wrap { overflow-x: auto; max-width: 100%; border-radius: 16px; border: 1px solid #E8E0D8; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.05); -webkit-overflow-scrolling: touch; }
 .ph-escala-table { border-collapse: collapse; min-width: max-content; width: 100%; }
 .ph-escala-table th,
 .ph-escala-table td { border-right: 1px solid #E8E0D8; }
@@ -149,6 +150,33 @@
     max-height: 90vh;
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
+  }
+  .ph-escala-toolbar,
+  .ph-escala-toolbar-actions {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+  .ph-escala-toolbar-actions > button {
+    justify-content: center;
+  }
+  .ph-escala-legend {
+    gap: 10px;
+    font-size: 11px;
+  }
+  .ph-escala-name-col,
+  .ph-escala-name-col-td {
+    min-width: 120px;
+    max-width: 120px;
+  }
+  .ph-escala-day-cell {
+    width: 28px;
+    min-width: 28px;
+    max-width: 28px;
+    padding: 6px 1px;
+  }
+  .ph-escala-table th {
+    width: 28px !important;
+    min-width: 28px !important;
   }
 }
 @media (max-width: 480px) {

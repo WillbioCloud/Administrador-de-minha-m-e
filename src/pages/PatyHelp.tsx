@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, CSSProperties, useCallback } from 'react'
 import './PatyHelp.css'
 import { supabase } from '../supabaseClient'
 import type { Employee, Station, Schedule, DayMark, EmpType, Status, Tab } from '../types'
@@ -9,7 +9,7 @@ import {
   Warehouse, Star, ClipboardList, Wrench, Pizza, Utensils,
   Plus, Pencil, X, Check, ChevronDown, ChevronRight, ChevronLeft,
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
-  AlertTriangle, Umbrella, Home, BadgeCheck, Timer,
+  AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
   CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase, Loader2,
   UserPlus, Sparkles, Bot,
 } from 'lucide-react'
@@ -118,13 +118,25 @@ export default function PatyHelp() {
   const uncovSts    = stations.filter(s => s.assignedIds.length === 0)
   const getEmployee = (id: number) => employees.find(e => e.id === id)
 
-  const violations = getViolationDays(employees, schedule, viewYear, viewMonth)
+  const violations    = getViolationDays(employees, schedule, viewYear, viewMonth)
   const hasViolations = Object.keys(violations).length > 0
 
   // ─ Schedule helpers ─
   const toggleEscalaCell = async (empId: number, dateISO: string) => {
     const cur = schedule[empId]?.[dateISO]
     if (cur === 'vacation') return
+
+    // Block if removing the folga would create >7 consecutive days
+    if (cur === 'folga') {
+      const simSched = { ...schedule, [empId]: { ...(schedule[empId] ?? {}) } }
+      delete simSched[empId][dateISO]
+      const simViol = getViolationDays(employees.filter(e => e.id === empId), simSched, viewYear, viewMonth)
+      if (simViol[empId]?.size) {
+        setAiError(`⚠️ Remover esta folga faria ${getEmployee(empId)?.name.split(' ')[0]} trabalhar mais de 7 dias seguidos! Use a IA para reorganizar.`)
+        setTimeout(() => setAiError(null), 5000)
+        return
+      }
+    }
 
     const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
     setSchedule(prev => {
@@ -249,9 +261,9 @@ export default function PatyHelp() {
     await supabase.from('station_employees').delete().eq('station_id', stationId).eq('employee_id', empId)
   }
 
-  const saveStation = async (u: Station) => {
-    await supabase.from('stations').update({ name: u.name, icon_key: u.iconKey }).eq('id', u.id)
-    setStations(prev => prev.map(s => s.id === u.id ? { ...s, name: u.name, iconKey: u.iconKey } : s))
+  const saveStation = async (updated: Station) => {
+    await supabase.from('stations').update({ name: updated.name, icon_key: updated.iconKey }).eq('id', updated.id)
+    setStations(prev => prev.map(s => s.id === updated.id ? { ...s, name: updated.name, iconKey: updated.iconKey } : s))
     setEditStationModal(null)
   }
 
@@ -292,7 +304,7 @@ export default function PatyHelp() {
     })
   }
 
-  // ─ AI: apply changes from Gemini response ─
+  // ─ AI: apply changes ─
   const applyAiChanges = async (changes: AiChange[]) => {
     const newSched = { ...schedule }
     for (const ch of changes) {
@@ -327,12 +339,12 @@ Pedido: ${emp.name} (ID${emp.id}) quer folgar em ${fmtDateLong(dateISO)} (${date
 
 Regras obrigatórias:
 1. Nenhum funcionário pode trabalhar mais de 7 dias consecutivos
-2. Prefira fazer uma troca: encontre outro funcionário que tenha folga próxima a essa data e que possa trabalhar no dia desejado por ${emp.name.split(' ')[0]}, enquanto ${emp.name.split(' ')[0]} trabalha no dia que esse funcionário teria folga
-3. Minimize alterações — faça apenas as mudanças necessárias
+2. Prefira fazer uma troca: encontre outro funcionário com folga próxima que possa trabalhar no dia desejado
+3. Minimize alterações — apenas as necessárias
 4. Mantenha o total de folgas do mês de cada funcionário
 
-Responda SOMENTE com JSON válido (sem markdown), no formato exato:
-{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"},{"employee_id":2,"date":"YYYY-MM-DD","action":"remove_folga"}],"explanation":"Explicação breve em português das trocas feitas"}`
+Responda SOMENTE com JSON válido (sem markdown):
+{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"}],"explanation":"Explicação breve em português"}`
 
       const raw = await callGemini(prompt)
       const parsed = parseAiResponse(raw)
@@ -346,26 +358,26 @@ Responda SOMENTE com JSON válido (sem markdown), no formato exato:
     }
   }
 
-  // ─ AI: full schedule review ─
+  // ─ AI: full review ─
   const handleAIReview = async () => {
     setAiLoading(true); setAiError(null); setAiMessage(null)
     try {
       const ctx = buildScheduleContext(employees, schedule, viewYear, viewMonth)
       const prompt = `${ctx}
 
-Analise a escala acima e:
-1. Identifique funcionários que trabalham mais de 7 dias consecutivos
-2. Sugira ajustes mínimos para corrigir essas violações
+Analise a escala e:
+1. Identifique funcionários com mais de 7 dias consecutivos
+2. Sugira ajustes mínimos para corrigir violações
 3. Mantenha o número de folgas de cada funcionário
 
 Responda com JSON:
-{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"}],"explanation":"Resumo das violações encontradas e correções aplicadas em português"}`
+{"changes":[{"employee_id":1,"date":"YYYY-MM-DD","action":"add_folga"}],"explanation":"Resumo em português"}`
 
       const raw = await callGemini(prompt)
       const parsed = parseAiResponse(raw)
       if (parsed.changes.length > 0) {
         await applyAiChanges(parsed.changes)
-        setAiMessage(`✅ ${parsed.changes.length} ajuste(s) aplicado(s): ${parsed.explanation}`)
+        setAiMessage(`✅ ${parsed.changes.length} ajuste(s): ${parsed.explanation}`)
       } else {
         setAiMessage(`✅ ${parsed.explanation}`)
       }
@@ -377,14 +389,15 @@ Responda com JSON:
     }
   }
 
-  // ─ Charts ─
+  // ─ Charts data ─
   const pieData  = [
     { name: 'Cobertas',    value: coveredSts.length, color: C.success },
     { name: 'Descobertas', value: uncovSts.length,   color: C.danger  },
   ]
   const weekData = [
     { day: 'Seg', n: 0 }, { day: 'Ter', n: 0 }, { day: 'Qua', n: 0 },
-    { day: 'Qui', n: active.length }, { day: 'Sex', n: 0 }, { day: 'Sáb', n: 0 }, { day: 'Dom', n: 0 },
+    { day: 'Qui', n: active.length },
+    { day: 'Sex', n: 0 }, { day: 'Sáb', n: 0 }, { day: 'Dom', n: 0 },
   ]
 
   const modalStation = stations.find(s => s.id === assignModal?.stationId)
@@ -411,12 +424,13 @@ Responda com JSON:
 
   return (
     <div className="ph-app">
-      {/* Sidebar */}
+      {/* ── Sidebar ── */}
       <nav className="ph-sidebar">
         <div className="ph-sidebar-logo"><ChefHat size={22} color="#FFF5EE" strokeWidth={1.8} /></div>
         <div className="ph-sidebar-nav">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
-            <button key={id} className={`ph-nav-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)} title={label}>
+            <button key={id} className={`ph-nav-btn ${tab === id ? 'active' : ''}`}
+              onClick={() => setTab(id)} title={label}>
               <Icon size={20} strokeWidth={tab === id ? 2.2 : 1.8} />
               <span className="ph-nav-label">{label}</span>
             </button>
@@ -427,7 +441,7 @@ Responda com JSON:
         </div>
       </nav>
 
-      {/* Content */}
+      {/* ── Content ── */}
       <div className="ph-content">
         <header className="ph-header">
           <div>
@@ -440,7 +454,7 @@ Responda com JSON:
           </div>
         </header>
 
-        {/* AI toast messages */}
+        {/* AI toast */}
         {(aiMessage || aiError) && (
           <div style={{ margin: '12px 28px 0', padding: '12px 16px', borderRadius: 12, background: aiError ? C.dangerLight : C.successLight, border: `1px solid ${aiError ? C.danger + '40' : C.success + '40'}`, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
             <span style={{ fontSize: 13, color: aiError ? C.danger : C.success, flex: 1, lineHeight: 1.5 }}>{aiMessage ?? aiError}</span>
@@ -489,7 +503,7 @@ Responda com JSON:
         </main>
       </div>
 
-      {/* Mobile nav */}
+      {/* ── Mobile nav ── */}
       <div className="ph-mobile-nav">
         <div className="ph-mob-inner">
           {NAV_ITEMS.map(({ id, label, Icon }) => (
@@ -568,7 +582,7 @@ Responda com JSON:
         </BottomSheet>
       )}
 
-      {/* Drag-to-day AI swap confirmation */}
+      {/* Drag-to-day swap */}
       {dragFolgaConfirm && (
         <BottomSheet onClose={() => setDragFolgaConfirm(null)} title="Agendar folga">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
@@ -582,11 +596,7 @@ Responda com JSON:
               </div>
             </div>
           </div>
-
-          <div style={{ fontSize: 13, color: C.textMid, lineHeight: 1.6, marginBottom: 20 }}>
-            Como quer aplicar esta folga?
-          </div>
-
+          <div style={{ fontSize: 13, color: C.textMid, lineHeight: 1.6, marginBottom: 20 }}>Como quer aplicar esta folga?</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <button onClick={() => handleAISwap(dragFolgaConfirm.empId, dragFolgaConfirm.dateISO, false)}
               style={{ ...primaryBtnSt, background: C.bg, color: C.text, border: `1px solid ${C.border}` }}>
@@ -598,16 +608,12 @@ Responda com JSON:
               {aiLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={16} />}
               {aiLoading ? 'IA organizando...' : 'Reorganizar com IA'}
             </button>
-            {!GEMINI_KEY && (
-              <div style={{ fontSize: 11, color: C.danger, textAlign: 'center' }}>
-                Configure VITE_GEMINI_API_KEY no .env.local para usar a IA
-              </div>
-            )}
+            {!GEMINI_KEY && <div style={{ fontSize: 11, color: C.danger, textAlign: 'center' }}>Configure VITE_GEMINI_API_KEY no .env.local</div>}
           </div>
         </BottomSheet>
       )}
 
-      {/* AI Review modal */}
+      {/* AI review */}
       {aiReviewModal && (
         <BottomSheet onClose={() => setAiReviewModal(false)} title="Revisar escala com IA">
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px', background: C.infoLight, borderRadius: 12, marginBottom: 20 }}>
@@ -629,11 +635,7 @@ Responda com JSON:
             {aiLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={16} />}
             {aiLoading ? 'Analisando...' : 'Analisar e corrigir'}
           </button>
-          {!GEMINI_KEY && (
-            <div style={{ fontSize: 11, color: C.danger, textAlign: 'center', marginTop: 8 }}>
-              Configure VITE_GEMINI_API_KEY no .env.local
-            </div>
-          )}
+          {!GEMINI_KEY && <div style={{ fontSize: 11, color: C.danger, textAlign: 'center', marginTop: 8 }}>Configure VITE_GEMINI_API_KEY no .env.local</div>}
         </BottomSheet>
       )}
 
@@ -756,12 +758,9 @@ function EditStationForm({ station, onSave }: { station: Station; onSave: (s: St
 
 function RolesManager({ roles, onChange }: { roles: string[]; onChange: (r: string[]) => void }) {
   const [newRole, setNewRole] = useState('')
-  const addRole = () => {
-    const t = newRole.trim(); if (!t || roles.includes(t)) return
-    onChange([...roles, t]); setNewRole('')
-  }
+  const addRole    = () => { const t = newRole.trim(); if (!t || roles.includes(t)) return; onChange([...roles, t]); setNewRole('') }
   const deleteRole = (r: string) => onChange(roles.filter(x => x !== r))
-  const moveRole = (idx: number, dir: -1 | 1) => {
+  const moveRole   = (idx: number, dir: -1 | 1) => {
     const arr = [...roles]; const t = idx + dir
     if (t < 0 || t >= arr.length) return
     ;[arr[idx], arr[t]] = [arr[t], arr[idx]]; onChange(arr)

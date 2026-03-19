@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { Calendar, ChevronLeft, ChevronRight, Eraser, GripVertical, Loader2, Sparkles, Trash2, Users } from 'lucide-react'
 import type { DayMark, Employee, Schedule } from '../../types'
 import { buildDateArray, C, DAY_ABBR, MONTH_NAMES, TODAY_ISO } from '../patyHelpCore'
@@ -77,9 +77,9 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+      <div className="ph-escala-toolbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="ph-escala-toolbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={onAIReview} disabled={aiLoading} style={{ ...addBtnSt, background: hasViolations ? C.violation : C.info, gap: 6 }}>
             {aiLoading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={14} />}
             {hasViolations ? 'Violações detectadas' : 'Revisar com IA'}
@@ -94,7 +94,7 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="ph-escala-legend" style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         {[
           { bg: C.dangerLight, border: '#F0B0B0', color: C.danger, text: 'F', label: 'Folga — clique para marcar/remover' },
           { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias' },
@@ -121,8 +121,8 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
           </tr></thead>
           <tbody>
             {roles.map(role => (
-              <>
-                <tr key={`g-${role}`}><td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>{role}</td></tr>
+              <Fragment key={`role-${role}`}>
+                <tr><td colSpan={daysInMonth + 1} style={{ background: '#F4EFE9', padding: '6px 14px', fontSize: 11, fontWeight: 700, color: C.textMid, textTransform: 'uppercase', letterSpacing: '0.6px', borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>{role}</td></tr>
                 {employees.filter(e => e.role === role).map(emp => {
                   const hasViolation = !!violations[emp.id]?.size
                   return (
@@ -160,7 +160,7 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
                     </tr>
                   )
                 })}
-              </>
+              </Fragment>
             ))}
           </tbody>
         </table>
