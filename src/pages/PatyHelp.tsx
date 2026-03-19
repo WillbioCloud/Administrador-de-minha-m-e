@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, CSSProperties, useCallback } from 'react'
 import './PatyHelp.css'
 import { supabase } from '../supabaseClient'
 import type { Employee, Station, Schedule, DayMark, EmpType, Status, Tab } from '../types'
+import { GEMINI_KEY, callGemini, buildScheduleContext, parseAiResponse, type AiChange } from '../services/geminiService'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -113,89 +114,39 @@ const getViolationDays = (
   employees: Employee[], schedule: Schedule, year: number, month: number
 ): Record<number, Set<string>> => {
   const result: Record<number, Set<string>> = {}
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const monthStart = new Date(Date.UTC(year, month, 1))
+  const monthEnd = new Date(Date.UTC(year, month + 1, 0))
+  const scanStart = new Date(monthStart)
+  const scanEnd = new Date(monthEnd)
+  scanStart.setUTCDate(scanStart.getUTCDate() - 7)
+  scanEnd.setUTCDate(scanEnd.getUTCDate() + 7)
 
   for (const emp of employees) {
     const violations = new Set<string>()
-    let streak = 0
-    const streakDates: string[] = []
+    let streakWorkDates: string[] = []
 
-    // Check 5 days before month start for continuity
-    for (let d = -4; d <= daysInMonth; d++) {
-      const dt = new Date(year, month, d)
+    for (let dt = new Date(scanStart); dt <= scanEnd; dt.setUTCDate(dt.getUTCDate() + 1)) {
       const iso = dt.toISOString().split('T')[0]
       const mark = schedule[emp.id]?.[iso]
       const isResting = mark === 'folga' || mark === 'vacation'
 
       if (!isResting) {
-        streak++
-        if (d >= 1) streakDates.push(iso)
-        if (streak > 7) {
-          // All days in current streak that are in this month are violations
-          streakDates.forEach(dd => violations.add(dd))
+        streakWorkDates.push(iso)
+        if (streakWorkDates.length > 7) {
+          const from8th = streakWorkDates.slice(7)
+          from8th.forEach(workDate => {
+            if (workDate >= monthStart.toISOString().split('T')[0] && workDate <= monthEnd.toISOString().split('T')[0]) {
+              violations.add(workDate)
+            }
+          })
         }
       } else {
-        streak = 0
-        streakDates.length = 0
+        streakWorkDates = []
       }
     }
     if (violations.size > 0) result[emp.id] = violations
   }
   return result
-}
-
-// ─── Gemini AI ────────────────────────────────────────────────────────────────
-
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY as string | undefined
-
-const callGemini = async (prompt: string): Promise<string> => {
-  if (!GEMINI_KEY) throw new Error('Chave VITE_GEMINI_API_KEY não encontrada no .env.local')
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
-      }),
-    }
-  )
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(`Gemini ${res.status}: ${(err as any)?.error?.message ?? res.statusText}`)
-  }
-  const data = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-}
-
-const buildScheduleContext = (
-  employees: Employee[], schedule: Schedule, year: number, month: number
-): string => {
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
-  const header = `Mês: ${MONTH_NAMES[month]} ${year} (${daysInMonth} dias)\n`
-  const empList = employees.map(e => `  ID${e.id}: ${e.name} | ${e.role} | ${e.type}`).join('\n')
-  const legend = `\nLegenda: T=Trabalhando  F=Folga  V=Férias\n`
-  const dayHeader = `${'Nome'.padEnd(22)} ${days.map(d => String(d).padStart(2)).join(' ')}`
-  const rows = employees.map(emp => {
-    const marks = days.map(d => {
-      const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-      const m = schedule[emp.id]?.[iso]
-      return m === 'folga' ? ' F' : m === 'vacation' ? ' V' : ' T'
-    }).join('')
-    return `${emp.name.slice(0, 22).padEnd(22)} ${marks}`
-  }).join('\n')
-  return `${header}\nFuncionários:\n${empList}${legend}\n${dayHeader}\n${rows}`
-}
-
-interface AiChange { employee_id: number; date: string; action: 'add_folga' | 'remove_folga' }
-interface AiResponse { changes: AiChange[]; explanation: string }
-
-const parseAiResponse = (raw: string): AiResponse => {
-  const match = raw.match(/\{[\s\S]*\}/)
-  if (!match) throw new Error('Resposta da IA não contém JSON válido')
-  return JSON.parse(match[0]) as AiResponse
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
@@ -304,12 +255,17 @@ export default function PatyHelp() {
     const cur = schedule[empId]?.[dateISO]
     if (cur === 'vacation') return
 
-    // Block if removing folga would create >7 consecutive days
+    // Keep old behavior: clicking folga removes it. But we still block if it breaks 7-day rule.
     if (cur === 'folga') {
-      // simulate removing
       const simSched = { ...schedule, [empId]: { ...(schedule[empId] ?? {}) } }
       delete simSched[empId][dateISO]
-      const simViolations = getViolationDays(employees.filter(e => e.id === empId), simSched, viewYear, viewMonth)
+      const [y, m] = dateISO.split('-')
+      const simViolations = getViolationDays(
+        employees.filter(e => e.id === empId),
+        simSched,
+        Number(y),
+        Number(m) - 1,
+      )
       if (simViolations[empId]?.size) {
         setAiError(`⚠️ Remover esta folga fará ${getEmployee(empId)?.name.split(' ')[0]} trabalhar mais de 7 dias seguidos! Use a IA para reorganizar.`)
         setTimeout(() => setAiError(null), 5000)
