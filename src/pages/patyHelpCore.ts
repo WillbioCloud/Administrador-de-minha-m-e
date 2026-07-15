@@ -147,10 +147,11 @@ export const getVacationRange = (empId: number, schedule: Schedule) => {
 // ─── 7-day consecutive violation detection ────────────────────────────────────
 
 export const getViolationDays = (
-  employees: Employee[], schedule: Schedule, year: number, month: number
+  employees: Employee[], schedule: Schedule, year: number, month: number, scaleMode: string
 ): Record<number, Set<string>> => {
   const result: Record<number, Set<string>> = {}
   const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const limit = scaleMode === '12x36' ? 1 : (scaleMode === '6x1' ? 6 : 5)
 
   for (const emp of employees) {
     const violations = new Set<string>()
@@ -167,7 +168,7 @@ export const getViolationDays = (
       if (!isResting) {
         streak++
         if (d >= 1) streakDates.push(iso)
-        if (streak > 7) streakDates.forEach(dd => violations.add(dd))
+        if (streak > limit) streakDates.forEach(dd => violations.add(dd))
       } else {
         streak = 0
         streakDates.length = 0

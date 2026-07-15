@@ -184,3 +184,27 @@
   .ph-row-211 > *:first-child { grid-column: span 1; }
   .ph-escala-name-col, .ph-escala-name-col-td { min-width: 110px; max-width: 110px; }
 }
+
+/* ─── AI Chat ────────────────────────────────── */
+.ph-chat-sidebar-desktop {
+  width: 340px;
+  min-width: 340px;
+  height: calc(100vh - 180px);
+  position: sticky;
+  top: 10px;
+}
+.ph-chat-mobile-sheet {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .ph-chat-sidebar-desktop {
+    display: none;
+  }
+  .ph-chat-mobile-sheet {
+    display: block;
+  }
+  .ph-escala-layout {
+    flex-direction: column;
+  }
+}

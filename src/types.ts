@@ -5,6 +5,7 @@ export type EmpType  = 'efetivo' | 'temporario'
 export type Status   = 'active' | 'dayoff' | 'vacation'
 export type Tab      = 'hoje' | 'pracas' | 'escala' | 'equipe'
 export type ViewMode = 'dia' | 'semana' | 'mes'
+export type ScaleMode = '5x1' | '5x2' | '6x1' | '12x36'
 
 export interface DbRole {
   id: number
@@ -75,3 +76,10 @@ export type StationAssignmentMap = Record<string, Record<number, number[]>>
 
 // empId → { 'YYYY-MM-DD' → DayMark }
 export type Schedule = Record<number, Record<string, DayMark>>
+
+export interface ChatMessage {
+  role: 'user' | 'model' | 'assistant'
+  content: string
+}
+
+export type CustomRules = string

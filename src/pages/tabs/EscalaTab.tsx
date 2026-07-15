@@ -1,8 +1,8 @@
-import { Fragment, useRef, useState } from 'react'
-import { Calendar, ChevronLeft, ChevronRight, Eraser, GripVertical, Loader2, Sparkles, Trash2, Users } from 'lucide-react'
-import type { DayMark, Employee, Schedule } from '../../types'
+import { Fragment, useRef, useState, useEffect } from 'react'
+import { Calendar, ChevronLeft, ChevronRight, Eraser, GripVertical, Loader2, Sparkles, Trash2, Users, MessageSquare, Send, X, Settings2, Bot, User } from 'lucide-react'
+import type { DayMark, Employee, Schedule, ChatMessage } from '../../types'
 import { buildDateArray, C, DAY_ABBR, MONTH_NAMES, TODAY_ISO } from '../patyHelpCore'
-import { Avatar, FLabel, TypeBadge, addBtnSt, iconEditBtnSt, inputSt, outlineBtnSt, primaryBtnSt } from '../patyHelpUi'
+import { Avatar, FLabel, TypeBadge, addBtnSt, iconEditBtnSt, inputSt, outlineBtnSt, primaryBtnSt, BottomSheet } from '../patyHelpUi'
 
 interface EscalaProps {
   employees: Employee[]; schedule: Schedule
@@ -16,10 +16,19 @@ interface EscalaProps {
   onClearFolgas: () => void
   onAIReview: () => void
   aiLoading: boolean
+  isChatOpen: boolean
+  setIsChatOpen: (v: boolean) => void
+  chatHistory: ChatMessage[]
+  onSendMessage: (msg: string) => void
+  customAiRules: string
+  setCustomAiRules: (v: string) => void
+  scaleMode: string
+  setScaleMode: (v: any) => void
 }
 
-export function EscalaTab({ employees, schedule, violations, hasViolations, viewYear, viewMonth, setViewYear, setViewMonth, onToggleCell, onOpenVacation, onReorder, onDragToDay, onClearFolgas, onAIReview, aiLoading }: EscalaProps) {
+export function EscalaTab({ employees, schedule, violations, hasViolations, viewYear, viewMonth, setViewYear, setViewMonth, onToggleCell, onOpenVacation, onReorder, onDragToDay, onClearFolgas, onAIReview, aiLoading, isChatOpen, setIsChatOpen, chatHistory, onSendMessage, customAiRules, setCustomAiRules, scaleMode, setScaleMode }: EscalaProps) {
   const dragIdRef = useRef<number | null>(null)
+  const [scaleModalOpen, setScaleModalOpen] = useState(false)
   const scrollWrapRef = useRef<HTMLDivElement>(null)
   const scrollInterval = useRef<ReturnType<typeof setInterval> | null>(null)
   const dragOverX = useRef(0)
@@ -76,12 +85,21 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
   )
 
   return (
-    <div>
-      <div className="ph-escala-toolbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-        <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
-        <div className="ph-escala-toolbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={onAIReview} disabled={aiLoading} style={{ ...addBtnSt, background: hasViolations ? C.violation : C.info, gap: 6 }}>
-            {aiLoading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={14} />}
+    <div className="ph-escala-layout" style={{ display: 'flex', gap: 16, height: '100%', alignItems: 'flex-start' }}>
+      <div className="ph-escala-main" style={{ flex: 1, minWidth: 0, width: '100%' }}>
+        <div className="ph-escala-toolbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+          <span className="ph-section-label" style={{ marginBottom: 0 }}>Escala mensal</span>
+          <div className="ph-escala-toolbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => setScaleModalOpen(true)} className="ph-action-btn" title="Configurar Escala (ex: 5x1, 6x1)" style={{ ...addBtnSt, background: C.card, color: C.text, border: `1px solid ${C.border}` }}>
+              <Settings2 size={14} color={C.textMid} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Escala {scaleMode}</span>
+            </button>
+            <button onClick={() => setIsChatOpen(!isChatOpen)} className="ph-chat-toggle-btn" style={{ ...addBtnSt, background: isChatOpen ? C.infoLight : C.card, color: isChatOpen ? C.info : C.text, border: `1px solid ${isChatOpen ? C.info : C.border}` }}>
+              <MessageSquare size={14} color={isChatOpen ? C.info : C.textMid} /> 
+              <span style={{ fontSize: 13, fontWeight: 600 }}>IA Chat</span>
+            </button>
+            <button onClick={onAIReview} disabled={aiLoading} style={{ ...addBtnSt, background: hasViolations ? C.violation : C.info, gap: 6 }}>
+              {aiLoading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Sparkles size={14} />}
             {hasViolations ? 'Violações detectadas' : 'Revisar com IA'}
           </button>
           <button onClick={onClearFolgas} style={{ ...addBtnSt, background: C.card, color: C.textMid, border: `1px solid ${C.border}` }}>
@@ -98,7 +116,7 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
         {[
           { bg: C.dangerLight, border: '#F0B0B0', color: C.danger, text: 'F', label: 'Folga — clique para marcar/remover' },
           { bg: C.vacationLight, border: '#E8D060', color: '#8B6A00', text: 'FÉR', label: 'Férias' },
-          { bg: C.violationLight, border: '#FF6B00', color: C.violation, text: '!', label: '+7 dias seguidos' },
+          { bg: C.violationLight, border: '#FF6B00', color: C.violation, text: '!', label: `+${scaleMode === '12x36' ? 1 : (scaleMode === '6x1' ? 6 : 5)} dias seguidos` },
         ].map(l => (
           <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.textMid }}>
             <div style={{ minWidth: 20, height: 20, borderRadius: 4, background: l.bg, border: `1px solid ${l.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: l.color }}>{l.text}</div>
@@ -151,7 +169,7 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
                         if (isViol && !isF && !isVac) bg = C.violationLight
 
                         return (
-                          <td key={d} className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`} onClick={() => !isVac && onToggleCell(emp.id, dateISO)} onDragOver={e => { e.preventDefault(); e.stopPropagation() }} onDrop={e => { e.preventDefault(); e.stopPropagation(); stopScroll(); const fromId = dragIdRef.current; dragIdRef.current = null; if (fromId !== null) onDragToDay(fromId, dateISO) }} title={isViol ? '⚠ Mais de 7 dias seguidos' : undefined}
+                          <td key={d} className={`ph-escala-day-cell${isVac ? ' vacation' : ''}`} onClick={() => !isVac && onToggleCell(emp.id, dateISO)} onDragOver={e => { e.preventDefault(); e.stopPropagation() }} onDrop={e => { e.preventDefault(); e.stopPropagation(); stopScroll(); const fromId = dragIdRef.current; dragIdRef.current = null; if (fromId !== null) onDragToDay(fromId, dateISO) }} title={isViol ? '⚠ Mais de 6 dias seguidos' : undefined}
                             style={{ background: bg, color: isVac ? '#8B6A00' : isF ? C.danger : isViol ? C.violation : 'transparent', fontWeight: 800, fontSize: isVac ? 8 : 11, borderRight: today ? `1px solid ${C.accent}40` : `1px solid ${C.border}`, boxShadow: isViol && !isF && !isVac ? `inset 0 0 0 1px ${C.violation}50` : undefined }}>
                             {isVac ? 'FÉR' : isF ? 'F' : isViol ? '!' : ''}
                           </td>
@@ -164,6 +182,183 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
             ))}
           </tbody>
         </table>
+      </div>
+      </div>
+
+      {/* Desktop Chat Sidebar */}
+      {isChatOpen && (
+        <div className="ph-chat-sidebar-desktop">
+          <ChatPanel 
+            chatHistory={chatHistory} 
+            onSendMessage={onSendMessage} 
+            aiLoading={aiLoading} 
+            onClose={() => setIsChatOpen(false)}
+            customAiRules={customAiRules}
+            setCustomAiRules={setCustomAiRules}
+          />
+        </div>
+      )}
+
+      {/* Mobile Chat Bottom Sheet */}
+      {isChatOpen && (
+        <div className="ph-chat-mobile-sheet">
+          <BottomSheet onClose={() => setIsChatOpen(false)} title="Assistente de Escala">
+            <div style={{ height: '70vh', display: 'flex', flexDirection: 'column' }}>
+              <ChatPanel 
+                chatHistory={chatHistory} 
+                onSendMessage={onSendMessage} 
+                aiLoading={aiLoading} 
+                onClose={() => setIsChatOpen(false)}
+                customAiRules={customAiRules}
+                setCustomAiRules={setCustomAiRules}
+                isMobile
+              />
+            </div>
+          </BottomSheet>
+        </div>
+      )}
+
+      {/* Modal Scale Mode */}
+      {scaleModalOpen && (
+        <BottomSheet onClose={() => setScaleModalOpen(false)} title="Modo de Escala Global">
+          <div style={{ marginBottom: 16, fontSize: 14, color: C.textMid }}>
+            Defina o padrão de escala para que o sistema alerte sobre adiantamento ou excesso de dias de trabalho.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[
+              { id: '6x1', label: '6x1 (Trabalha 6, Folga 1)' },
+              { id: '5x1', label: '5x1 (Trabalha 5, Folga 1)' },
+              { id: '5x2', label: '5x2 (Trabalha 5, Folga 2)' },
+              { id: '12x36', label: '12x36 (Trabalha 1, Folga 1)' }
+            ].map(m => (
+              <button 
+                key={m.id} 
+                onClick={() => { setScaleMode(m.id); setScaleModalOpen(false) }}
+                style={{
+                  padding: 14, borderRadius: 8, border: `1px solid ${scaleMode === m.id ? C.accent : C.border}`,
+                  background: scaleMode === m.id ? C.accentLight : C.card,
+                  color: scaleMode === m.id ? C.accent : C.text,
+                  fontWeight: scaleMode === m.id ? 700 : 500,
+                  textAlign: 'left', cursor: 'pointer'
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </BottomSheet>
+      )}
+    </div>
+  )
+}
+
+function ChatPanel({ 
+  chatHistory, onSendMessage, aiLoading, onClose, customAiRules, setCustomAiRules, isMobile 
+}: { 
+  chatHistory: ChatMessage[], onSendMessage: (msg: string) => void, aiLoading: boolean, onClose: () => void, customAiRules: string, setCustomAiRules: (v: string) => void, isMobile?: boolean 
+}) {
+  const [msg, setMsg] = useState('')
+  const [showSettings, setShowSettings] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatHistory])
+
+  const handleSend = () => {
+    if (!msg.trim() || aiLoading) return
+    onSendMessage(msg)
+    setMsg('')
+  }
+
+  return (
+    <div className="ph-chat-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fff', borderRadius: isMobile ? 0 : 16, border: isMobile ? 'none' : `1px solid ${C.border}`, overflow: 'hidden' }}>
+      {!isMobile && (
+        <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: C.nav }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontWeight: 600, fontSize: 14 }}>
+            <Bot size={18} color={C.infoLight} /> Assistente de Escala
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button onClick={() => setShowSettings(!showSettings)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: showSettings ? 1 : 0.6, padding: 4 }}>
+              <Settings2 size={16} />
+            </button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: 0.6, padding: 4 }}>
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+      {isMobile && (
+        <div style={{ padding: '0 0 10px 0', display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={() => setShowSettings(!showSettings)} style={{ ...outlineBtnSt, width: 'auto', padding: '6px 12px', fontSize: 12 }}>
+            <Settings2 size={14} /> Regras Customizadas
+          </button>
+        </div>
+      )}
+
+      {showSettings && (
+        <div style={{ padding: '16px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+          <FLabel style={{ fontSize: 12, color: C.textMid, marginBottom: 8 }}>Regras fixas para a IA (ex: Domingos são sagrados)</FLabel>
+          <textarea 
+            value={customAiRules} 
+            onChange={e => setCustomAiRules(e.target.value)}
+            placeholder="Digite aqui regras importantes..."
+            style={{ ...inputSt, minHeight: 80, resize: 'vertical' }}
+          />
+        </div>
+      )}
+
+      <div className="ph-chat-messages" style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {chatHistory.map((m, i) => {
+          const isUser = m.role === 'user'
+          return (
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, maxWidth: '90%' }}>
+                {!isUser && (
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: C.infoLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <Bot size={16} color={C.info} />
+                  </div>
+                )}
+                <div style={{ 
+                  padding: '10px 14px', 
+                  borderRadius: 16, 
+                  borderBottomRightRadius: isUser ? 4 : 16,
+                  borderBottomLeftRadius: !isUser ? 4 : 16,
+                  background: isUser ? C.accent : '#f4f4f4',
+                  color: isUser ? '#fff' : C.text,
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  whiteSpace: 'pre-wrap'
+                }}>
+                  {m.content}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        {aiLoading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: C.textMid, fontSize: 12 }}>
+            <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> IA digitando...
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="ph-chat-input-area" style={{ padding: '14px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: 10, background: '#fff' }}>
+        <input 
+          value={msg}
+          onChange={e => setMsg(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSend()}
+          placeholder="Peça para reorganizar a escala..."
+          style={{ ...inputSt, flex: 1, borderRadius: 20, paddingLeft: 16 }}
+        />
+        <button 
+          onClick={handleSend}
+          disabled={!msg.trim() || aiLoading}
+          style={{ width: 40, height: 40, borderRadius: '50%', background: msg.trim() && !aiLoading ? C.accent : '#e0e0e0', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: msg.trim() && !aiLoading ? 'pointer' : 'default', transition: 'background 0.2s' }}
+        >
+          <Send size={18} style={{ marginLeft: -2 }} />
+        </button>
       </div>
     </div>
   )

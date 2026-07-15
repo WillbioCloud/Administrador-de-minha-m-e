@@ -1,8 +1,8 @@
 import { useState, useEffect, CSSProperties, useCallback } from 'react'
 import './PatyHelp.css'
 import { supabase } from '../supabaseClient'
-import type { Employee, Station, Schedule, StationAssignmentMap, DayMark, EmpType, Status, Tab, ViewMode } from '../types'
-import { GEMINI_KEY, callGemini, buildScheduleContext, parseAiResponse, type AiChange } from '../services/geminiService'
+import type { Employee, Station, Schedule, StationAssignmentMap, DayMark, EmpType, Status, Tab, ViewMode, ChatMessage, CustomRules, ScaleMode } from '../types'
+import { GEMINI_KEY, callGemini, buildScheduleContext, parseAiResponse, type AiChange, callGeminiChat } from '../services/geminiService'
 import {
   Flame, Snowflake, ChefHat, Coffee, Wine, Package, Bell,
   UtensilsCrossed, ShoppingBag, CreditCard, Truck, Store,
@@ -11,7 +11,7 @@ import {
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
   AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
   CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase, Loader2,
-  UserPlus, Sparkles, Bot,
+  UserPlus, Sparkles, Bot, MessageSquare,
 } from 'lucide-react'
 import { C, MONTH_NAMES, TODAY, TODAY_ISO, cap, fmtDateLong, buildRange, buildDateArray, getStatusForDate, getVacationRange, getViolationDays, getIcon, getEmpColor, STATION_ICONS, type IconComp } from './patyHelpCore'
 import { Avatar, BottomSheet, FLabel, IconPicker, TypeBadge, StatusBadge, TypeSelector, inputSt, selectSt, primaryBtnSt, outlineBtnSt, addBtnSt, linkBtnSt, iconEditBtnSt } from './patyHelpUi'
@@ -63,9 +63,21 @@ export default function PatyHelp() {
 
   // Drag-to-day AI folga swap
   const [dragFolgaConfirm, setDragFolgaConfirm] = useState<{ empId: number; dateISO: string } | null>(null)
+  const [violationConfirm, setViolationConfirm] = useState<{ empId: number; dateISO: string; msg: string } | null>(null)
   const [aiLoading,  setAiLoading]  = useState(false)
   const [aiMessage,  setAiMessage]  = useState<string | null>(null)
   const [aiError,    setAiError]    = useState<string | null>(null)
+
+  // AI Chat Sidebar
+  const [isChatOpen, setIsChatOpen] = useState(false)
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([{ role: 'assistant', content: 'Olá! Sou o Assistente de Escala. Como posso ajudar com a organização da escala de folgas?' }])
+  const [customAiRules, setCustomAiRules] = useState<CustomRules>(() => localStorage.getItem('ph_aiRules') || '')
+  
+  // Scale mode (5x1, 6x1, etc.)
+  const [scaleMode, setScaleMode] = useState<ScaleMode>(() => (localStorage.getItem('ph_scaleMode') as ScaleMode) || '6x1')
+
+  useEffect(() => { localStorage.setItem('ph_aiRules', customAiRules) }, [customAiRules])
+  useEffect(() => { localStorage.setItem('ph_scaleMode', scaleMode) }, [scaleMode])
 
   const [newEmp, setNewEmp] = useState({ name: '', role: '', type: 'efetivo' as EmpType })
   const [newSt,  setNewSt]  = useState({ name: '', iconKey: 'flame' })
@@ -133,27 +145,48 @@ export default function PatyHelp() {
   const uncovSts    = stations.filter(s => s.assignedIds.length === 0)
   const getEmployee = (id: number) => employees.find(e => e.id === id)
 
-  const violations    = getViolationDays(employees, schedule, viewYear, viewMonth)
+  const violations    = getViolationDays(employees, schedule, viewYear, viewMonth, scaleMode)
   const hasViolations = Object.keys(violations).length > 0
 
   // ─ Schedule helpers ─
-  const toggleEscalaCell = async (empId: number, dateISO: string) => {
+  const toggleEscalaCell = async (empId: number, dateISO: string, force: boolean = false) => {
     const cur = schedule[empId]?.[dateISO]
     if (cur === 'vacation') return
 
-    // Block if removing the folga would create >7 consecutive days
-    if (cur === 'folga') {
-      const simSched = { ...schedule, [empId]: { ...(schedule[empId] ?? {}) } }
-      delete simSched[empId][dateISO]
-      const simViol = getViolationDays(employees.filter(e => e.id === empId), simSched, viewYear, viewMonth)
-      if (simViol[empId]?.size) {
-        setAiError(`⚠️ Remover esta folga faria ${getEmployee(empId)?.name.split(' ')[0]} trabalhar mais de 7 dias seguidos! Use a IA para reorganizar.`)
-        setTimeout(() => setAiError(null), 5000)
+    const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
+
+    if (newMark === 'folga' && !force) {
+      const limit = scaleMode === '12x36' ? 1 : (scaleMode === '6x1' ? 6 : 5)
+      
+      let workedDays = 0
+      let checkDate = new Date(dateISO + 'T12:00:00')
+      checkDate.setDate(checkDate.getDate() - 1)
+      
+      for (let i = 0; i < 15; i++) {
+        const checkISO = checkDate.toISOString().split('T')[0]
+        const m = schedule[empId]?.[checkISO]
+        if (m === 'folga' || m === 'vacation') break
+        workedDays++
+        checkDate.setDate(checkDate.getDate() - 1)
+      }
+
+      if (workedDays > limit) {
+        setViolationConfirm({ 
+          empId, 
+          dateISO, 
+          msg: `Atenção: O funcionário está trabalhando MAIS dias que o esperado (${workedDays} dias sem folga, escala exige no máximo ${limit}). Deseja confirmar essa folga atrasada?`
+        })
+        return
+      } else if (workedDays > 0 && workedDays < limit) {
+        setViolationConfirm({ 
+          empId, 
+          dateISO, 
+          msg: `Atenção: O funcionário está trabalhando MENOS dias que o esperado (${workedDays} dias trabalhados, escala exige ${limit}). Você está adiantando a folga. Deseja marcar mesmo assim?`
+        })
         return
       }
     }
 
-    const newMark: DayMark | null = cur === 'folga' ? null : 'folga'
     setSchedule(prev => {
       const s = { ...(prev[empId] ?? {}) }
       if (newMark === null) delete s[dateISO]; else s[dateISO] = newMark
@@ -443,6 +476,23 @@ Responda com JSON:
     }
   }
 
+  // ─ AI: Chat Send ─
+  const handleSendMessage = async (msg: string) => {
+    if (!msg.trim()) return
+    const newHistory: ChatMessage[] = [...chatHistory, { role: 'user', content: msg }]
+    setChatHistory(newHistory)
+    setAiLoading(true)
+    try {
+      const ctx = buildScheduleContext(employees, schedule, viewYear, viewMonth)
+      const resp = await callGeminiChat(newHistory, ctx, customAiRules, scaleMode)
+      setChatHistory([...newHistory, { role: 'assistant', content: resp }])
+    } catch (e: any) {
+      setChatHistory([...newHistory, { role: 'assistant', content: `❌ Erro: ${e.message}` }])
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   // ─ Charts data ─
   const pieData  = [
     { name: 'Cobertas',    value: coveredSts.length, color: C.success },
@@ -538,6 +588,14 @@ Responda com JSON:
               onClearFolgas={() => setClearFolgasModal(true)}
               onAIReview={() => setAiReviewModal(true)}
               aiLoading={aiLoading}
+              isChatOpen={isChatOpen}
+              setIsChatOpen={setIsChatOpen}
+              chatHistory={chatHistory}
+              onSendMessage={handleSendMessage}
+              customAiRules={customAiRules}
+              setCustomAiRules={setCustomAiRules}
+              scaleMode={scaleMode}
+              setScaleMode={setScaleMode}
             />
           )}
           {tab === 'pracas' && (
@@ -724,6 +782,30 @@ Responda com JSON:
             {aiLoading ? 'Analisando...' : 'Analisar e corrigir'}
           </button>
           {!GEMINI_KEY && <div style={{ fontSize: 11, color: C.danger, textAlign: 'center', marginTop: 8 }}>Configure VITE_GEMINI_API_KEY no .env.local</div>}
+        </BottomSheet>
+      )}
+
+      {/* Violation confirmation */}
+      {violationConfirm && (
+        <BottomSheet onClose={() => setViolationConfirm(null)} title="Atenção: Limite de dias">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px', background: violationConfirm.msg.includes('MENOS') ? C.warningLight : C.violationLight, borderRadius: 12, marginBottom: 20 }}>
+            <AlertTriangle size={28} color={violationConfirm.msg.includes('MENOS') ? C.warning : C.violation} strokeWidth={1.8} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{violationConfirm.msg.includes('MENOS') ? 'Adiantamento de Folga' : 'Excesso de dias trabalhados'}</div>
+              <div style={{ fontSize: 12, color: C.textMid, marginTop: 2, lineHeight: 1.5 }}>
+                {violationConfirm.msg}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={() => setViolationConfirm(null)} style={{ ...outlineBtnSt, flex: 1 }}>Cancelar</button>
+            <button onClick={() => {
+              toggleEscalaCell(violationConfirm.empId, violationConfirm.dateISO, true)
+              setViolationConfirm(null)
+            }} style={{ ...primaryBtnSt, flex: 1, background: violationConfirm.msg.includes('MENOS') ? C.warning : C.violation, border: 'none' }}>
+              Confirmar folga
+            </button>
+          </div>
         </BottomSheet>
       )}
 
