@@ -102,9 +102,11 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex bg-[#FFF8F0] font-sans selection:bg-[#C1440E]/20">
+    <div className="min-h-screen flex bg-[#FFF8F0] font-sans selection:bg-[#C1440E]/20 overflow-hidden relative">
       {/* Left Pane — brand + signature (kitchen ticket rail) */}
-      <div className="hidden lg:flex lg:w-[46%] relative bg-[#2B1710] overflow-hidden flex-col justify-between p-12">
+      <div 
+        className={`hidden lg:flex lg:w-[46%] relative z-20 bg-[#2B1710] overflow-hidden flex-col justify-between py-12 px-8 lg:py-16 lg:px-10 xl:py-20 xl:px-12 transition-all duration-1000 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSignUp ? 'lg:translate-x-[117.391%] shadow-[-20px_0_40px_rgba(0,0,0,0.3)]' : 'lg:translate-x-0 shadow-[20px_0_40px_rgba(0,0,0,0.3)]'}`}
+      >
         <div
           className="absolute inset-0 opacity-[0.06] pointer-events-none"
           style={{
@@ -113,7 +115,7 @@ export default function LoginPage() {
           }}
         />
 
-        <div className="relative z-10 flex items-center gap-3">
+        <div className="relative z-10 flex items-center gap-3 ml-8 lg:ml-24 xl:ml-32">
           <div className="w-11 h-11 bg-[#C1440E] rounded-xl flex items-center justify-center shadow-lg">
             <ChefHat size={22} className="text-[#FFF8F0]" strokeWidth={2} />
           </div>
@@ -122,7 +124,7 @@ export default function LoginPage() {
           </span>
         </div>
 
-        <div className="relative z-10">
+        <div className="relative z-10 ml-8 lg:ml-24 xl:ml-32">
           <h1 className="text-[42px] leading-[1.08] text-[#FFF8F0] font-[Instrument_Serif,serif] mb-4">
             Cada turno tem<br />sua comanda.
           </h1>
@@ -136,7 +138,9 @@ export default function LoginPage() {
       </div>
 
       {/* Right Pane — Form */}
-      <div className="w-full lg:w-[54%] flex items-center justify-center p-6 sm:p-12">
+      <div 
+        className={`w-full lg:w-[54%] relative z-10 flex items-center justify-center p-6 sm:p-12 transition-transform duration-1000 ease-[cubic-bezier(0.16,1,0.3,1)] ${isSignUp ? 'lg:-translate-x-[85.185%]' : 'lg:translate-x-0'}`}
+      >
         <div className="w-full max-w-[380px] space-y-8">
           <div className="text-center lg:text-left">
             <div className="lg:hidden w-14 h-14 bg-[#C1440E] rounded-xl flex items-center justify-center mx-auto mb-6 shadow-lg">
