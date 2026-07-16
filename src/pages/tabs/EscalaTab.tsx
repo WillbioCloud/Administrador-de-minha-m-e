@@ -24,9 +24,10 @@ interface EscalaProps {
   setCustomAiRules: (v: string) => void
   scaleMode: string
   setScaleMode: (v: any) => void
+  onClearChat: () => void
 }
 
-export function EscalaTab({ employees, schedule, violations, hasViolations, viewYear, viewMonth, setViewYear, setViewMonth, onToggleCell, onOpenVacation, onReorder, onDragToDay, onClearFolgas, onAIReview, aiLoading, isChatOpen, setIsChatOpen, chatHistory, onSendMessage, customAiRules, setCustomAiRules, scaleMode, setScaleMode }: EscalaProps) {
+export function EscalaTab({ employees, schedule, violations, hasViolations, viewYear, viewMonth, setViewYear, setViewMonth, onToggleCell, onOpenVacation, onReorder, onDragToDay, onClearFolgas, onAIReview, aiLoading, isChatOpen, setIsChatOpen, chatHistory, onSendMessage, customAiRules, setCustomAiRules, scaleMode, setScaleMode, onClearChat }: EscalaProps) {
   const dragIdRef = useRef<number | null>(null)
   const [scaleModalOpen, setScaleModalOpen] = useState(false)
   const scrollWrapRef = useRef<HTMLDivElement>(null)
@@ -195,6 +196,10 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
             onClose={() => setIsChatOpen(false)}
             customAiRules={customAiRules}
             setCustomAiRules={setCustomAiRules}
+            employees={employees}
+            schedule={schedule}
+            onToggleCell={onToggleCell}
+            onClearChat={onClearChat}
           />
         </div>
       )}
@@ -212,6 +217,10 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
                 customAiRules={customAiRules}
                 setCustomAiRules={setCustomAiRules}
                 isMobile
+                employees={employees}
+                schedule={schedule}
+                onToggleCell={onToggleCell}
+                onClearChat={onClearChat}
               />
             </div>
           </BottomSheet>
@@ -253,13 +262,49 @@ export function EscalaTab({ employees, schedule, violations, hasViolations, view
 }
 
 function ChatPanel({ 
-  chatHistory, onSendMessage, aiLoading, onClose, customAiRules, setCustomAiRules, isMobile 
+  chatHistory, onSendMessage, aiLoading, onClose, customAiRules, setCustomAiRules, isMobile, employees, schedule, onToggleCell, onClearChat
 }: { 
-  chatHistory: ChatMessage[], onSendMessage: (msg: string) => void, aiLoading: boolean, onClose: () => void, customAiRules: string, setCustomAiRules: (v: string) => void, isMobile?: boolean 
+  chatHistory: ChatMessage[], onSendMessage: (msg: string) => void, aiLoading: boolean, onClose: () => void, customAiRules: string, setCustomAiRules: (v: string) => void, isMobile?: boolean, employees: Employee[], schedule: Schedule, onToggleCell: (empId: number, dateISO: string) => void, onClearChat: () => void
 }) {
   const [msg, setMsg] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // ESTADO QUE ESTAVA FALTANDO PARA OS BOTÕES FUNCIONAREM
+  const [proposalsState, setProposalsState] = useState<Record<string, 'accepted' | 'rejected'>>({})
+
+  // FUNÇÃO QUE ESTAVA FALTANDO PARA APLICAR A FOLGA
+  const handleApplyProposal = (empId: number, dateISO: string, action: 'add_folga' | 'remove_folga', key: string) => {
+    const isCurrentlyDayOff = schedule[empId]?.[dateISO] === 'folga'
+    if (action === 'add_folga' && !isCurrentlyDayOff) {
+      onToggleCell(empId, dateISO)
+    } else if (action === 'remove_folga' && isCurrentlyDayOff) {
+      onToggleCell(empId, dateISO)
+    }
+    setProposalsState(prev => ({ ...prev, [key]: 'accepted' }))
+  }
+
+  const [localRules, setLocalRules] = useState(customAiRules)
+  const [isSavingRules, setIsSavingRules] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState(false)
+
+  // Sincroniza caso a prop global mude externamente
+  useEffect(() => {
+    setLocalRules(customAiRules)
+  }, [customAiRules])
+
+  const handleSaveRules = async () => {
+    setIsSavingRules(true)
+    try {
+      await Promise.resolve(setCustomAiRules(localRules))
+      setSaveSuccess(true)
+      setTimeout(() => setSaveSuccess(false), 3000)
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setIsSavingRules(false)
+    }
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -300,17 +345,39 @@ function ChatPanel({
         <div style={{ padding: '16px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
           <FLabel style={{ fontSize: 12, color: C.textMid, marginBottom: 8 }}>Regras fixas para a IA (ex: Domingos são sagrados)</FLabel>
           <textarea 
-            value={customAiRules} 
-            onChange={e => setCustomAiRules(e.target.value)}
-            placeholder="Digite aqui regras importantes..."
-            style={{ ...inputSt, minHeight: 80, resize: 'vertical' }}
+            value={localRules} 
+            onChange={e => setLocalRules(e.target.value)}
+            placeholder="Digite aqui regras importantes para a IA considerar ao montar a escala..."
+            style={{ ...inputSt, minHeight: 80, resize: 'vertical', marginBottom: 12 }}
           />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+            <button 
+              onClick={() => { onClearChat(); setShowSettings(false); }}
+              style={{ ...outlineBtnSt, color: C.danger, borderColor: '#F0B0B0', padding: '8px 16px', height: 'auto', fontSize: 13 }}
+            >
+              Limpar Chat
+            </button>
+            {saveSuccess && <span style={{ fontSize: 13, color: C.success, fontWeight: 600 }}>✅ Salvo com sucesso!</span>}
+            <button 
+              onClick={handleSaveRules}
+              disabled={isSavingRules}
+              style={{ ...primaryBtnSt, width: 'auto', padding: '8px 16px', fontSize: 13, height: 'auto' }}
+            >
+              {isSavingRules ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : 'Salvar Regras'}
+            </button>
+          </div>
         </div>
       )}
 
       <div className="ph-chat-messages" style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {chatHistory.map((m, i) => {
           const isUser = m.role === 'user'
+          
+          // Regex para detectar a tag de mudança enviada pela IA
+          const changeRegex = /\[MUDANCA:\s*(\d+)\s*\|\s*([\d-]+)\s*\|\s*(add_folga|remove_folga)\]/g
+          const visibleContent = m.content.replace(changeRegex, '').trim()
+          const matches = [...m.content.matchAll(changeRegex)]
+
           return (
             <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, maxWidth: '90%' }}>
@@ -319,18 +386,66 @@ function ChatPanel({
                     <Bot size={16} color={C.info} />
                   </div>
                 )}
-                <div style={{ 
-                  padding: '10px 14px', 
-                  borderRadius: 16, 
-                  borderBottomRightRadius: isUser ? 4 : 16,
-                  borderBottomLeftRadius: !isUser ? 4 : 16,
-                  background: isUser ? C.accent : '#f4f4f4',
-                  color: isUser ? '#fff' : C.text,
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                  whiteSpace: 'pre-wrap'
-                }}>
-                  {m.content}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ 
+                    padding: '10px 14px', 
+                    borderRadius: 16, 
+                    borderBottomRightRadius: isUser ? 4 : 16,
+                    borderBottomLeftRadius: !isUser ? 4 : 16,
+                    background: isUser ? C.accent : '#f4f4f4',
+                    color: isUser ? '#fff' : C.text,
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap'
+                  }}>
+                    {visibleContent}
+                  </div>
+
+                  {/* Renderização dos botões interativos de ação */}
+                  {matches.length > 0 && !isUser && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: '#FFF8F4', border: '1px solid #EAE3DE', padding: '10px', borderRadius: 12, width: '100%', marginTop: 2 }}>
+                      {matches.map((match, propIdx) => {
+                        const empId = parseInt(match[1])
+                        const dateISO = match[2]
+                        const action = match[3] as 'add_folga' | 'remove_folga'
+                        const empName = employees.find(e => e.id === empId)?.name.split(' ').slice(0, 2).join(' ') || `ID ${empId}`
+                        const key = `${i}-${propIdx}`
+                        const status = proposalsState[key]
+                        
+                        const formattedDate = dateISO.split('-').reverse().slice(0, 2).join('/')
+
+                        return (
+                          <div key={propIdx} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ fontSize: 11, color: C.text, fontWeight: 600 }}>
+                              {action === 'add_folga' ? '➕ Marcar folga' : '❌ Remover folga'} para <strong>{empName}</strong> em {formattedDate}
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              {status === 'accepted' ? (
+                                <span style={{ fontSize: 11, color: C.success, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>✅ Aplicado com sucesso</span>
+                              ) : status === 'rejected' ? (
+                                <span style={{ fontSize: 11, color: C.textLight, fontWeight: 700 }}>🚫 Alteração recusada</span>
+                              ) : (
+                                <>
+                                  <button 
+                                    onClick={() => handleApplyProposal(empId, dateISO, action, key)}
+                                    style={{ background: '#8B4F1D', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                                  >
+                                    Aceitar
+                                  </button>
+                                  <button 
+                                    onClick={() => setProposalsState(prev => ({ ...prev, [key]: 'rejected' }))}
+                                    style={{ background: '#EAE3DE', color: '#4A2612', border: 'none', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                                  >
+                                    Recusar
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

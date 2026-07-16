@@ -5,6 +5,31 @@
 
 @import "tailwindcss";
 
+@theme {
+  --color-background: #FFF8F0;
+  --color-foreground: #4A2612;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #4A2612;
+  --color-popover: #FDFBF9;
+  --color-popover-foreground: #4A2612;
+  --color-primary: #8B4F1D;
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: #F5EBE4;
+  --color-secondary-foreground: #4A2612;
+  --color-muted: #9E8070;
+  --color-muted-foreground: #6B4E3D;
+  --color-accent: #E8D060;
+  --color-accent-foreground: #4A2612;
+  --color-destructive: #D32F2F;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: #EAE3DE;
+  --color-input: #EAE3DE;
+  --color-ring: #8B4F1D;
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 

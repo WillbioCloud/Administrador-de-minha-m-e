@@ -74,6 +74,13 @@ export default function PatyHelp() {
   const [aiLoading,  setAiLoading]  = useState(false)
   const [aiMessage,  setAiMessage]  = useState<string | null>(null)
   const [aiError,    setAiError]    = useState<string | null>(null)
+  const [session,    setSession]    = useState<any>(null)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => setSession(session))
+    return () => subscription.unsubscribe()
+  }, [])
 
   // AI Chat Sidebar
   const [isChatOpen, setIsChatOpen] = useState(false)
@@ -116,12 +123,13 @@ export default function PatyHelp() {
       if (user) {
         const { data: profile } = await supabase
           .from('profiles')
-          .select('scale_mode, custom_ai_rules')
+          .select('scale_mode, custom_ai_rules, chat_history')
           .eq('id', user.id)
           .single()
         if (profile) {
           if (profile.scale_mode) setScaleMode(profile.scale_mode as ScaleMode)
           if (profile.custom_ai_rules) setCustomAiRules(profile.custom_ai_rules)
+          if (profile.chat_history) setChatHistory(profile.chat_history)
         }
       }
 
@@ -516,17 +524,27 @@ Responda com JSON:
   }
 
   // ─ AI: Chat Send ─
+  const syncChatHistory = async (newHistory: ChatMessage[]) => {
+    setChatHistory(newHistory)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      await supabase.from('profiles').update({ chat_history: newHistory }).eq('id', user.id)
+    }
+  }
+
+  const handleClearChat = () => syncChatHistory([])
+
   const handleSendMessage = async (msg: string) => {
     if (!msg.trim()) return
     const newHistory: ChatMessage[] = [...chatHistory, { role: 'user', content: msg }]
-    setChatHistory(newHistory)
+    syncChatHistory(newHistory)
     setAiLoading(true)
     try {
       const ctx = buildScheduleContext(employees, schedule, viewYear, viewMonth)
       const resp = await callGeminiChat(newHistory, ctx, customAiRules, scaleMode)
-      setChatHistory([...newHistory, { role: 'assistant', content: resp }])
+      syncChatHistory([...newHistory, { role: 'assistant', content: resp }])
     } catch (e: any) {
-      setChatHistory([...newHistory, { role: 'assistant', content: `❌ Erro: ${e.message}` }])
+      syncChatHistory([...newHistory, { role: 'assistant', content: `❌ Erro: ${e.message}` }])
     } finally {
       setAiLoading(false)
     }
@@ -581,30 +599,53 @@ Responda com JSON:
         </div>
         <div className="ph-sidebar-bottom">
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="ph-nav-btn" title="Opções do Perfil">
-                <Settings size={18} strokeWidth={1.8} />
-              </button>
+            <DropdownMenuTrigger className="ph-nav-btn" title="Opções do Perfil" style={{ border: 'none', background: 'transparent', cursor: 'pointer', outline: 'none' }}>
+              <Settings size={18} strokeWidth={1.8} />
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="end" className="w-56 font-sans border-[#EAE3DE] bg-[#FDFBF9]">
+            <DropdownMenuContent side="right" align="end" sideOffset={12} className="w-64 font-sans border border-[#EAE3DE] bg-[#FDFBF9] p-3 rounded-xl shadow-xl flex flex-col gap-1">
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="font-normal">
-                  <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-semibold leading-none text-[#4A2612]">Paty</p>
-                    <p className="text-xs leading-none text-muted-foreground">paty@restaurante.com</p>
+                <DropdownMenuLabel className="font-normal p-2 mb-2">
+                  <div className="flex items-center gap-3">
+                    {/* Avatar com a Inicial do E-mail */}
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#8B4F1D] text-white font-bold text-lg flex-shrink-0 shadow-sm">
+                      {session?.user?.email ? session.user.email.charAt(0).toUpperCase() : 'U'}
+                    </div>
+                    {/* Dados do Usuário */}
+                    <div className="flex flex-col gap-1 overflow-hidden">
+                      <p className="text-sm font-semibold leading-none text-[#4A2612] truncate">
+                        Usuário
+                      </p>
+                      <p className="text-xs leading-none text-[#9E8070] truncate">
+                        {session?.user?.email || 'carregando...'}
+                      </p>
+                    </div>
                   </div>
                 </DropdownMenuLabel>
               </DropdownMenuGroup>
-              <DropdownMenuSeparator className="bg-[#EAE3DE]" />
-              <DropdownMenuItem className="cursor-pointer font-medium text-sm text-[#4A2612] hover:bg-[#F5EBE4] focus:bg-[#F5EBE4]">
-                Plano: Profissional
-              </DropdownMenuItem>
-              <DropdownMenuItem className="cursor-pointer font-medium text-sm text-[#4A2612] hover:bg-[#F5EBE4] focus:bg-[#F5EBE4]">
-                Notificações
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="bg-[#EAE3DE]" />
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600 font-bold cursor-pointer hover:bg-red-50 focus:bg-red-50 focus:text-red-700">
-                <LogOut className="mr-2 h-4 w-4" /> Sair
+              
+              <DropdownMenuSeparator className="bg-[#EAE3DE] my-2" />
+              
+              {/* Grupo de botões com espaço de 4px entre cada item */}
+              <DropdownMenuGroup className="flex flex-col gap-1">
+                <DropdownMenuItem className="cursor-pointer text-[#4A2612] focus:bg-[#F5EBE4] focus:text-[#4A2612] rounded-lg px-4 py-3 text-sm transition-colors outline-none flex items-center">
+                  <User className="mr-3 h-4 w-4 text-[#8B4F1D] flex-shrink-0" />
+                  <span className="font-medium">Meu Perfil</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem className="cursor-pointer text-[#4A2612] focus:bg-[#F5EBE4] focus:text-[#4A2612] rounded-lg px-4 py-3 text-sm transition-colors outline-none flex items-center">
+                  <BadgeCheck className="mr-3 h-4 w-4 text-[#8B4F1D] flex-shrink-0" />
+                  <span className="font-medium">Assinatura (Em breve)</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem className="cursor-pointer text-[#4A2612] focus:bg-[#F5EBE4] focus:text-[#4A2612] rounded-lg px-4 py-3 text-sm transition-colors outline-none flex items-center">
+                  <Bell className="mr-3 h-4 w-4 text-[#8B4F1D] flex-shrink-0" />
+                  <span className="font-medium">Notificações</span>
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              
+              <DropdownMenuSeparator className="bg-[#EAE3DE] my-2" />
+              
+              <DropdownMenuItem onClick={handleLogout} className="cursor-pointer text-[#D32F2F] focus:bg-[#FCDEDE] focus:text-[#D32F2F] rounded-lg px-4 py-3 text-sm font-bold transition-colors outline-none flex items-center mt-2">
+                <LogOut className="mr-3 h-4 w-4 flex-shrink-0" />
+                <span>Sair do sistema</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -660,6 +701,7 @@ Responda com JSON:
               onSendMessage={handleSendMessage}
               customAiRules={customAiRules}
               setCustomAiRules={handleCustomAiRulesChange}
+              onClearChat={handleClearChat}
               scaleMode={scaleMode}
               setScaleMode={handleScaleModeChange}
             />

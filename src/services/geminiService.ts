@@ -25,7 +25,7 @@ export const callGemini = async (prompt: string): Promise<string> => {
     throw new Error('Chave VITE_GEMINI_API_KEY não encontrada no .env.local')
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -55,12 +55,30 @@ export const callGeminiChat = async (
     throw new Error('Chave VITE_GEMINI_API_KEY não encontrada no .env.local')
 
   const systemInstruction = `Você é o "Chat Assistente de Escala com IA" do Paty Help. 
-Você ajuda a organizar e analisar a escala de folgas.
-Sempre seja educado, claro e prestativo.
+Você ajuda a organizar e analisar a escala de folgas do restaurante.
+
+DIRETRIZES DE ESTILO DE RESPOSTA:
+1. Seja extremamente claro, objetivo e com um tom profissional e elegante.
+2. É ESTRITAMENTE PROIBIDO usar marcação de negrito do Markdown (não use **texto** ou __texto__ em hipótese alguma). Entregue um texto limpo.
+3. Para criar listas, separar tópicos ou parágrafos de destaque, use apenas um asterisco simples (* ) no início da linha.
+4. Faça bom uso de quebras de linha para criar respiros entre os blocos de texto, deixando a interface bonita.
+5. Use emojis de forma extremamente contida (no máximo 1 ou 2 por mensagem), apenas quando for absolutamente essencial para a comunicação rápida.
+6. Evite parágrafos longos. Suas respostas devem ser muito fáceis de ler rapidamente no ambiente corrido de um restaurante.
+
+IMPORTANTE - SUGESTÕES E FLUXO DE ALTERAÇÃO:
+- Você atua como consultor no chat e NÃO altera a escala diretamente no banco por aqui.
+- Sempre que o usuário pedir uma troca ou alteração, primeiro analise as folgas atuais e quem pode cobrir, respeitando as regras do estabelecimento.
+- Forneça uma proposta analítica clara de alteração.
+- Se você sugerir uma mudança específica na escala (como dar folga a alguém ou tirar folga de alguém), você DEVE incluir a seguinte tag estruturada no final da sua mensagem para que o sistema mostre os botões de confirmação ("Aceitar" / "Recusar") para o usuário:
+  [MUDANCA: employee_id|YYYY-MM-DD|action]
+  Onde 'action' pode ser 'add_folga' (para marcar folga) ou 'remove_folga' (para remover folga/trabalhar).
+  Exemplo: [MUDANCA: 1|2026-08-01|add_folga]
+  
+  Importante: Coloque a tag no final da mensagem. Você pode incluir múltiplas tags se sugerir mais de uma mudança (uma por linha).
 
 Regra da Escala do Restaurante: ${scaleMode} (${scaleMode === '12x36' ? 'Trabalha 1, Folga 1' : scaleMode === '6x1' ? 'Trabalha 6, Folga 1 (máximo de 6 dias trabalhados)' : scaleMode === '5x1' ? 'Trabalha 5, Folga 1 (máximo de 5 dias)' : 'Trabalha 5, Folga 2 (máximo de 5 dias)'}).
 
-${customRules ? `Regras Customizadas do Usuário:\n${customRules}\n` : ''}
+${customRules ? `Regras Customizadas do Usuário (Siga-as rigorosamente!):\n${customRules}\n` : ''}
 Contexto Atual da Escala:\n${scheduleContext}`
 
   const contents = history.map(m => ({
@@ -69,7 +87,7 @@ Contexto Atual da Escala:\n${scheduleContext}`
   }))
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
