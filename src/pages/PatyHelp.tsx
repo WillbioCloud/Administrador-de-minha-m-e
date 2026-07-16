@@ -1,5 +1,5 @@
 import { useState, useEffect, CSSProperties, useCallback } from 'react'
-import './PatyHelp.css'
+
 import { supabase } from '../supabaseClient'
 import type { Employee, Station, Schedule, StationAssignmentMap, DayMark, EmpType, Status, Tab, ViewMode, ChatMessage, CustomRules, ScaleMode } from '../types'
 import { GEMINI_KEY, callGemini, buildScheduleContext, parseAiResponse, type AiChange, callGeminiChat } from '../services/geminiService'
@@ -11,8 +11,9 @@ import {
   Users, Calendar, UserCheck, LayoutDashboard, Settings,
   AlertTriangle, Umbrella, Home, TrendingUp, BadgeCheck, Timer,
   CalendarDays, Trash2, GripVertical, ChevronUp, Briefcase, Loader2,
-  UserPlus, Sparkles, Bot, MessageSquare,
+  UserPlus, Sparkles, Bot, MessageSquare, LogOut, User
 } from 'lucide-react'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel, DropdownMenuGroup } from '@/components/ui/dropdown-menu'
 import { C, MONTH_NAMES, TODAY, TODAY_ISO, cap, fmtDateLong, buildRange, buildDateArray, getStatusForDate, getVacationRange, getViolationDays, getIcon, getEmpColor, STATION_ICONS, type IconComp } from './patyHelpCore'
 import { Avatar, BottomSheet, FLabel, IconPicker, TypeBadge, StatusBadge, TypeSelector, inputSt, selectSt, primaryBtnSt, outlineBtnSt, addBtnSt, linkBtnSt, iconEditBtnSt } from './patyHelpUi'
 import { HojeTab } from './tabs/HojeTab'
@@ -64,6 +65,12 @@ export default function PatyHelp() {
   // Drag-to-day AI folga swap
   const [dragFolgaConfirm, setDragFolgaConfirm] = useState<{ empId: number; dateISO: string } | null>(null)
   const [violationConfirm, setViolationConfirm] = useState<{ empId: number; dateISO: string; msg: string } | null>(null)
+
+  // ─ Logout ─
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    window.location.href = '/'
+  }
   const [aiLoading,  setAiLoading]  = useState(false)
   const [aiMessage,  setAiMessage]  = useState<string | null>(null)
   const [aiError,    setAiError]    = useState<string | null>(null)
@@ -71,13 +78,32 @@ export default function PatyHelp() {
   // AI Chat Sidebar
   const [isChatOpen, setIsChatOpen] = useState(false)
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([{ role: 'assistant', content: 'Olá! Sou o Assistente de Escala. Como posso ajudar com a organização da escala de folgas?' }])
-  const [customAiRules, setCustomAiRules] = useState<CustomRules>(() => localStorage.getItem('ph_aiRules') || '')
+  const [customAiRules, setCustomAiRules] = useState<CustomRules>('')
   
   // Scale mode (5x1, 6x1, etc.)
-  const [scaleMode, setScaleMode] = useState<ScaleMode>(() => (localStorage.getItem('ph_scaleMode') as ScaleMode) || '6x1')
+  const [scaleMode, setScaleMode] = useState<ScaleMode>('6x1')
 
-  useEffect(() => { localStorage.setItem('ph_aiRules', customAiRules) }, [customAiRules])
-  useEffect(() => { localStorage.setItem('ph_scaleMode', scaleMode) }, [scaleMode])
+  // Sincroniza as configurações com a tabela profiles no Supabase
+  const updateProfileSettings = useCallback(async (mode: ScaleMode, rules: string) => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      await supabase.from('profiles').update({
+        scale_mode: mode,
+        custom_ai_rules: rules
+      }).eq('id', user.id)
+    }
+  }, [])
+
+  // Handlers customizados para os setters que atualizam o estado local e salvam no banco
+  const handleScaleModeChange = async (mode: ScaleMode) => {
+    setScaleMode(mode)
+    await updateProfileSettings(mode, customAiRules)
+  }
+
+  const handleCustomAiRulesChange = async (rules: string) => {
+    setCustomAiRules(rules)
+    await updateProfileSettings(scaleMode, rules)
+  }
 
   const [newEmp, setNewEmp] = useState({ name: '', role: '', type: 'efetivo' as EmpType })
   const [newSt,  setNewSt]  = useState({ name: '', iconKey: 'flame' })
@@ -86,6 +112,19 @@ export default function PatyHelp() {
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null)
     try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('scale_mode, custom_ai_rules')
+          .eq('id', user.id)
+          .single()
+        if (profile) {
+          if (profile.scale_mode) setScaleMode(profile.scale_mode as ScaleMode)
+          if (profile.custom_ai_rules) setCustomAiRules(profile.custom_ai_rules)
+        }
+      }
+
       const [rolesRes, empsRes, stationsRes, stEmpRes, schedRes, saRes] = await Promise.all([
         supabase.from('roles').select('id,name,sort_order').order('sort_order'),
         supabase.from('employees').select('id,name,role_id,initials,type,sort_order,roles(name)').order('sort_order'),
@@ -541,7 +580,34 @@ Responda com JSON:
           ))}
         </div>
         <div className="ph-sidebar-bottom">
-          <button className="ph-nav-btn" title="Configurações"><Settings size={18} strokeWidth={1.8} /></button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="ph-nav-btn" title="Opções do Perfil">
+                <Settings size={18} strokeWidth={1.8} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="right" align="end" className="w-56 font-sans border-[#EAE3DE] bg-[#FDFBF9]">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="font-normal">
+                  <div className="flex flex-col space-y-1">
+                    <p className="text-sm font-semibold leading-none text-[#4A2612]">Paty</p>
+                    <p className="text-xs leading-none text-muted-foreground">paty@restaurante.com</p>
+                  </div>
+                </DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator className="bg-[#EAE3DE]" />
+              <DropdownMenuItem className="cursor-pointer font-medium text-sm text-[#4A2612] hover:bg-[#F5EBE4] focus:bg-[#F5EBE4]">
+                Plano: Profissional
+              </DropdownMenuItem>
+              <DropdownMenuItem className="cursor-pointer font-medium text-sm text-[#4A2612] hover:bg-[#F5EBE4] focus:bg-[#F5EBE4]">
+                Notificações
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-[#EAE3DE]" />
+              <DropdownMenuItem onClick={handleLogout} className="text-red-600 font-bold cursor-pointer hover:bg-red-50 focus:bg-red-50 focus:text-red-700">
+                <LogOut className="mr-2 h-4 w-4" /> Sair
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </nav>
 
@@ -593,9 +659,9 @@ Responda com JSON:
               chatHistory={chatHistory}
               onSendMessage={handleSendMessage}
               customAiRules={customAiRules}
-              setCustomAiRules={setCustomAiRules}
+              setCustomAiRules={handleCustomAiRulesChange}
               scaleMode={scaleMode}
-              setScaleMode={setScaleMode}
+              setScaleMode={handleScaleModeChange}
             />
           )}
           {tab === 'pracas' && (
