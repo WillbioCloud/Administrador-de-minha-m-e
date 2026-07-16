@@ -3,12 +3,73 @@ import { supabase } from '../supabaseClient'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { Loader2, ChefHat, Sparkles, AlertTriangle, Check } from 'lucide-react'
+import {
+  Loader2,
+  ChefHat,
+  AlertTriangle,
+  Check,
+  Eye,
+  EyeOff,
+  Mail,
+  Lock,
+} from 'lucide-react'
+
+// Signature element: a kitchen "comanda" (order ticket) rail — order
+// tickets clipped to a spike, doubling as sample shift cards. Ties the
+// brand visual directly to the product's real subject (escala/shifts).
+function TicketRail() {
+  const tickets = [
+    { code: 'Nº 0247', name: 'Marina S.', role: 'Cozinha', shift: 'Seg · 18h–23h', tag: 'Confirmado', rot: -6 },
+    { code: 'Nº 0248', name: 'Diego A.', role: 'Salão', shift: 'Ter · 11h–15h', tag: 'Confirmado', rot: 3 },
+    { code: 'Nº 0249', name: 'Paty R.', role: 'Gerência', shift: 'Qua · 08h–17h', tag: 'Pendente', rot: -2 },
+  ]
+
+  return (
+    <div className="relative w-full max-w-[300px]">
+      <div className="absolute -top-3 left-8 w-[3px] h-full bg-[#E8A33D]/70 rounded-full" />
+      <div className="absolute -top-4 left-[30px] w-3 h-3 rounded-full bg-[#E8A33D] shadow-[0_0_12px_rgba(232,163,61,0.6)]" />
+
+      <div className="space-y-4 pt-2">
+        {tickets.map((t) => (
+          <div
+            key={t.code}
+            style={{ transform: `rotate(${t.rot}deg)` }}
+            className="relative bg-[#FFF8F0] text-[#2B1710] pl-10 pr-4 py-3 shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
+          >
+            <div className="absolute left-[26px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-[#2B1710]/10 border border-[#2B1710]/20" />
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-mono text-[10px] tracking-widest text-[#8D6B5A]">{t.code}</span>
+              <span
+                className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                  t.tag === 'Confirmado'
+                    ? 'bg-[#C1440E]/10 text-[#C1440E]'
+                    : 'bg-[#E8A33D]/20 text-[#946618]'
+                }`}
+              >
+                {t.tag}
+              </span>
+            </div>
+            <p className="font-semibold text-[15px] leading-tight">{t.name}</p>
+            <p className="text-[12px] text-[#8D6B5A]">{t.role} · {t.shift}</p>
+            <div
+              className="absolute -bottom-[6px] left-0 right-0 h-[6px] bg-[#FFF8F0]"
+              style={{
+                clipPath:
+                  'polygon(0% 0%,4% 100%,8% 0%,12% 100%,16% 0%,20% 100%,24% 0%,28% 100%,32% 0%,36% 100%,40% 0%,44% 100%,48% 0%,52% 100%,56% 0%,60% 100%,64% 0%,68% 100%,72% 0%,76% 100%,80% 0%,84% 100%,88% 0%,92% 100%,96% 0%,100% 100%,100% 0%)',
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPw, setShowPw] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -41,125 +102,138 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex bg-white font-sans selection:bg-[#C1440E]/20">
-      {/* Left Pane - Visual Premium */}
-      <div className="hidden lg:flex lg:w-1/2 relative bg-[#4A2612] overflow-hidden flex-col justify-between p-14 text-white">
-        {/* Gradient Background */}
-        <div className="absolute inset-0 bg-gradient-to-br from-[#3b1d0d] via-[#4A2612] to-[#C1440E] opacity-95 z-0"></div>
-        
-        {/* Decorative Orbs */}
-        <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-white/5 rounded-full blur-3xl pointer-events-none"></div>
-        <div className="absolute bottom-[-10%] left-[-10%] w-[400px] h-[400px] bg-[#C1440E]/30 rounded-full blur-3xl pointer-events-none"></div>
+    <div className="min-h-screen flex bg-[#FFF8F0] font-sans selection:bg-[#C1440E]/20">
+      {/* Left Pane — brand + signature (kitchen ticket rail) */}
+      <div className="hidden lg:flex lg:w-[46%] relative bg-[#2B1710] overflow-hidden flex-col justify-between p-12">
+        <div
+          className="absolute inset-0 opacity-[0.06] pointer-events-none"
+          style={{
+            backgroundImage:
+              'repeating-linear-gradient(45deg, #E8A33D 0, #E8A33D 1px, transparent 1px, transparent 14px)',
+          }}
+        />
 
-        {/* Logo/Header */}
         <div className="relative z-10 flex items-center gap-3">
-          <div className="w-12 h-12 bg-white/10 border border-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center shadow-2xl">
-            <ChefHat size={26} className="text-[#FFF5EE]" />
+          <div className="w-11 h-11 bg-[#C1440E] rounded-xl flex items-center justify-center shadow-lg">
+            <ChefHat size={22} className="text-[#FFF8F0]" strokeWidth={2} />
           </div>
-          <span className="font-[Instrument Serif,serif] text-4xl font-bold tracking-wide mt-1">Paty Help</span>
+          <span className="font-[Instrument_Serif,serif] text-[26px] font-bold text-[#FFF8F0] tracking-wide">
+            Paty Help
+          </span>
         </div>
 
-        {/* Value Proposition */}
-        <div className="relative z-10 max-w-lg mb-16">
-          <h1 className="text-5xl font-bold leading-[1.1] mb-6 font-[Instrument Serif,serif]">
-            A gestão da sua escala,<br />potencializada com IA.
+        <div className="relative z-10">
+          <h1 className="text-[42px] leading-[1.08] text-[#FFF8F0] font-[Instrument_Serif,serif] mb-4">
+            Cada turno tem<br />sua comanda.
           </h1>
-          <p className="text-lg text-[#F5EBE4] leading-relaxed font-light mb-12">
-            Esqueça as planilhas complexas. Organize e gerencie a equipe do seu restaurante de forma inteligente, sem conflitos e com total controle.
+          <p className="text-[15px] text-[#D9C3B4] leading-relaxed max-w-[320px] mb-10 font-light">
+            Monte a escala do seu restaurante como quem organiza o rush: rápido, visual e sem confusão na cozinha.
           </p>
-          
-          <div className="flex items-center gap-4 text-sm font-medium text-white">
-            <div className="flex -space-x-3">
-              {[1, 2, 3].map(i => (
-                <div key={i} className="w-10 h-10 rounded-full border-2 border-[#4A2612] bg-white/10 backdrop-blur-md flex items-center justify-center">
-                  <Sparkles size={16} className="text-[#F5EBE4]" />
-                </div>
-              ))}
-            </div>
-            <span className="font-light tracking-wide text-[#F5EBE4]">Junte-se a gestores eficientes.</span>
-          </div>
+          <TicketRail />
         </div>
+
+        <p className="relative z-10 text-[12px] text-[#8D6B5A]">© 2026 Paty Help</p>
       </div>
 
-      {/* Right Pane - Form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-6 sm:p-12 bg-[#FDFBF9] relative">
-        <div className="w-full max-w-[400px] space-y-8 relative z-10">
-          
+      {/* Right Pane — Form */}
+      <div className="w-full lg:w-[54%] flex items-center justify-center p-6 sm:p-12">
+        <div className="w-full max-w-[380px] space-y-8">
           <div className="text-center lg:text-left">
-            <div className="lg:hidden w-16 h-16 bg-gradient-to-br from-[#4A2612] to-[#6d391b] rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
-              <ChefHat size={32} color="#FFF5EE" strokeWidth={1.8} />
+            <div className="lg:hidden w-14 h-14 bg-[#C1440E] rounded-xl flex items-center justify-center mx-auto mb-6 shadow-lg">
+              <ChefHat size={26} className="text-[#FFF8F0]" strokeWidth={1.8} />
             </div>
-            <h2 className="text-[2rem] font-bold text-[#4A2612] font-[Instrument Serif,serif] mb-2 leading-tight">
+            <h2 className="text-[28px] font-bold text-[#2B1710] font-[Instrument_Serif,serif] mb-1.5 leading-tight">
               {isSignUp ? 'Crie sua conta' : 'Bem-vindo de volta'}
             </h2>
-            <p className="text-[#8D6B5A] text-sm">
+            <p className="text-[13.5px] text-[#8D6B5A]">
               {isSignUp ? 'Preencha seus dados para começar a usar o Paty Help.' : 'Acesse sua conta para continuar gerenciando sua escala.'}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6 mt-8">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {error && (
-              <div className="p-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
-                <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+              <div role="alert" className="flex items-start gap-2.5 p-3.5 rounded-xl bg-[#C1440E]/8 border border-[#C1440E]/20 text-[13px] text-[#A8380A] animate-in fade-in slide-in-from-top-2">
+                <AlertTriangle size={16} className="shrink-0 mt-0.5" />
                 <span>{error}</span>
               </div>
             )}
-            
+
             {success && (
-              <div className="p-4 text-sm text-green-700 bg-green-50 border border-green-100 rounded-xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
-                <Check size={18} className="shrink-0 mt-0.5" />
+              <div role="status" className="flex items-start gap-2.5 p-3.5 rounded-xl bg-[#3F7A4E]/8 border border-[#3F7A4E]/20 text-[13px] text-[#2F5D3A] animate-in fade-in slide-in-from-top-2">
+                <Check size={16} className="shrink-0 mt-0.5" />
                 <span>{success}</span>
               </div>
             )}
 
             <div className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="email" className="font-semibold text-[#4A2612] ml-1">E-mail</Label>
-                <Input 
-                  id="email" 
-                  type="email" 
-                  placeholder="paty@restaurante.com" 
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  className="h-12 rounded-xl bg-white border-[#EAE3DE] focus:border-[#C1440E] focus-visible:ring-[#C1440E] transition-all px-4 shadow-sm"
-                  required 
-                />
+              <div className="space-y-1.5">
+                <Label htmlFor="email" className="text-[13px] font-semibold text-[#2B1710] ml-0.5">E-mail</Label>
+                <div className="flex items-center gap-2.5 h-12 rounded-xl bg-[#FFF8F0] border border-[#E9DED5] focus-within:border-[#C1440E] px-3.5 transition-colors">
+                  <Mail size={17} className="text-[#8D6B5A] shrink-0" />
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="paty@restaurante.com"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    className="h-full border-0 shadow-none p-0 bg-transparent focus-visible:ring-0 text-[14.5px] text-[#2B1710] placeholder:text-[#B9A99B]"
+                    required
+                  />
+                </div>
               </div>
-              
-              <div className="space-y-2">
-                <div className="flex items-center justify-between ml-1">
-                  <Label htmlFor="password" className="font-semibold text-[#4A2612]">Senha</Label>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between ml-0.5">
+                  <Label htmlFor="password" className="text-[13px] font-semibold text-[#2B1710]">Senha</Label>
                   {!isSignUp && (
-                    <a href="#" className="text-xs font-semibold text-[#C1440E] hover:text-[#A8380A] transition-colors">
+                    <a href="#" className="text-[12px] font-semibold text-[#C1440E] hover:text-[#A8380A] transition-colors">
                       Esqueceu a senha?
                     </a>
                   )}
                 </div>
-                <Input 
-                  id="password" 
-                  type="password" 
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  className="h-12 rounded-xl bg-white border-[#EAE3DE] focus:border-[#C1440E] focus-visible:ring-[#C1440E] transition-all px-4 shadow-sm"
-                  required 
-                  minLength={6}
-                />
+                <div className="flex items-center gap-2.5 h-12 rounded-xl bg-[#FFF8F0] border border-[#E9DED5] focus-within:border-[#C1440E] px-3.5 transition-colors">
+                  <Lock size={17} className="text-[#8D6B5A] shrink-0" />
+                  <Input
+                    id="password"
+                    type={showPw ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    className="h-full border-0 shadow-none p-0 bg-transparent focus-visible:ring-0 text-[14.5px] text-[#2B1710] placeholder:text-[#B9A99B]"
+                    required
+                    minLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPw(s => !s)}
+                    className="text-[#8D6B5A] hover:text-[#2B1710] shrink-0"
+                    aria-label={showPw ? 'Ocultar senha' : 'Mostrar senha'}
+                  >
+                    {showPw ? <EyeOff size={17} /> : <Eye size={17} />}
+                  </button>
+                </div>
               </div>
             </div>
 
-            <Button 
-              type="submit" 
-              className="w-full h-12 rounded-xl bg-[#C1440E] hover:bg-[#A8380A] text-white text-[15px] font-bold shadow-lg shadow-[#C1440E]/25 transition-all active:scale-[0.98]" 
+            <Button
+              type="submit"
+              className="w-full h-12 rounded-xl bg-[#C1440E] hover:bg-[#A8380A] text-[#FFF8F0] text-[14.5px] font-bold shadow-lg shadow-[#C1440E]/25 transition-all active:scale-[0.98]"
               disabled={loading}
             >
-              {loading ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : (isSignUp ? 'Criar Conta' : 'Entrar na Conta')}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {isSignUp ? 'Criando conta…' : 'Entrando…'}
+                </span>
+              ) : (
+                isSignUp ? 'Criar conta' : 'Entrar na conta'
+              )}
             </Button>
           </form>
 
-          <div className="mt-8 text-center text-sm text-[#8D6B5A]">
+          <div className="text-center lg:text-left text-[13.5px] text-[#8D6B5A]">
             {isSignUp ? 'Já tem uma conta?' : 'Ainda não tem uma conta?'}{' '}
-            <button 
+            <button
               type="button"
               onClick={() => { setIsSignUp(!isSignUp); setError(null); setSuccess(null); }}
               className="font-bold text-[#C1440E] hover:text-[#A8380A] hover:underline transition-all"
@@ -167,7 +241,6 @@ export default function LoginPage() {
               {isSignUp ? 'Faça login' : 'Cadastre-se grátis'}
             </button>
           </div>
-          
         </div>
       </div>
     </div>
